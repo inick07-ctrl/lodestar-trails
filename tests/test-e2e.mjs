@@ -13,7 +13,26 @@ p.on('pageerror', e => { errs.push(e.message); console.log('[pageerror]', e.mess
 p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) console.log('[console]', m.text().slice(0, 200)); });
 const L = (...a) => console.log(...a);
 const wait = ms => p.waitForTimeout(ms);
-const ev = f => p.evaluate(f);
+const ev = (f, a) => p.evaluate(f, a);
+async function planAndFollow() {
+  // Plan a route (snaps to trails) and follow it
+  if (await ev(() => window.__lodestar.st.data.trails.size)) {
+    await p.click('[data-tab="explore"]'); await wait(300);
+    const t = await ev(() => { const t = [...window.__lodestar.st.data.trails.values()].sort((a, b) => b.len - a.len)[0]; return { a: t.chain[0], b: t.chain[Math.floor(t.chain.length / 2)] }; });
+    for (let k = 0; k < 3 && await ev(() => window.__lodestar.st.locate); k++) { await ev(() => window.__lodestar.sheet.set('peek')); await wait(300); await p.click('#btnLocate'); await wait(300); }
+    await p.click('[data-tab="saved"]'); await wait(300); await p.click('[data-sv="routes"]'); await wait(300); await p.click('#svPlan'); await wait(500);
+    await ev(() => window.__lodestar.sheet.set('peek')); await wait(400);
+    for (const c of [t.a, t.b]) { await ev(c => window.__lodestar.map.jumpTo({ center: c, zoom: 15 }), c); await wait(400); L('elAt', await ev(() => { const e = document.elementFromPoint(195, 422); return e.tagName + '.' + e.className + ' plan=' + !!window.__lodestar.st.plan + ' view=' + window.__lodestar.st.view.name; })); await p.mouse.click(195, 422); await wait(600); }
+    await ev(() => window.__lodestar.sheet.set('half')); await wait(500);
+    L('pts:', JSON.stringify(await ev(() => window.__lodestar.st.plan?.pts)), JSON.stringify(t), await ev(() => window.__lodestar.st.locate));
+    L('plan:', await ev(() => document.querySelector('.stat b')?.textContent), await ev(() => window.__lodestar.st.plan?.legs?.[0]?.length));
+    await p.screenshot({ path: SHOTS + '15-plan.png' });
+    await p.click('#plGo'); await wait(2500);
+    L('nav banner:', await ev(() => !document.querySelector('#navBanner').hidden && document.querySelector('#navBanner').innerText.replace(/\n/g, ' ')));
+    await p.screenshot({ path: SHOTS + '16-nav.png' });
+    await p.click('#nvEnd'); await wait(500); await p.click('[data-x]').catch(() => {}); await wait(500);
+  }
+}
 if (phase === 'online') {
   await p.goto(URL, { waitUntil: 'load' });
   await p.waitForFunction(() => navigator.serviceWorker?.controller || window.__swr, null, { timeout: 30000 }).catch(() => {});
@@ -42,6 +61,7 @@ if (phase === 'online') {
   await ev(() => window.__lodestar.sheet.set('peek')); await wait(500);
   await p.click('#btnWaypoint'); await wait(400); await p.click('[data-ic="camp"]'); await p.fill('#wName', 'Test camp'); await p.click('#wSave'); await wait(600);
   L('waypoints:', await ev(() => window.__lodestar.st.waypoints.length));
+  await planAndFollow();
   // Offline: save a small area near Paynesville
   await ev(() => window.__lodestar.map.jumpTo({ center: [-94.7114, 45.3805], zoom: 12.4 })); await ev(() => document.querySelector('#btnLocate').classList.contains('on') && document.querySelector('#btnLocate').click()); await wait(300); await ev(() => window.__lodestar.map.jumpTo({ center: [-94.7114, 45.3705], zoom: 12.4 }));
   await wait(1500);
@@ -71,6 +91,7 @@ if (phase === 'online') {
     await p.screenshot({ path: SHOTS + '12-offline-reload.png' });
     await p.click('#grab'); await wait(700); await p.screenshot({ path: SHOTS + '13-offline-trails.png' });
     const first = await p.$('[data-trail]'); if (first) { await first.click(); await wait(3500); await p.screenshot({ path: SHOTS + '14-offline-trail-detail.png' }); L('offline gain:', await ev(() => document.querySelector('#tGain')?.textContent)); }
+    await planAndFollow();
   }
 }
 L('page errors:', errs.length);
