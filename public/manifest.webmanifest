@@ -6,7 +6,7 @@
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#f4f2ec",
+  "background_color": "#0B1A33",
   "theme_color": "#2f7d4f",
   "categories": ["navigation", "travel", "sports"],
   "icons": [

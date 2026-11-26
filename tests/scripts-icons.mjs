@@ -1,12 +1,32 @@
 import { chromium } from 'playwright-core';
 import fs from 'fs';
-const svg = fs.readFileSync('../public/icons/logo.svg', 'utf8');
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const icons = path.join(root, 'public/icons');
+const svg = fs.readFileSync(path.join(icons, 'logo.svg'), 'utf8');
+// Full-bleed square for OS-masked icons (iOS/Android apply their own rounded mask).
+const square = svg.replace(/rx="114"/g, 'rx="0"');
+
+const jobs = [
+  // [name, size, svg, background (always opaque for app icons)]
+  ['icon-192', 192, square],
+  ['icon-512', 512, square],
+  ['icon-maskable-512', 512, square],
+  ['apple-touch-icon', 180, square],
+  ['favicon-32', 32, svg],
+  ['favicon-16', 16, svg],
+];
+
 const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
 const p = await b.newPage();
-for (const [name, size, pad, bg] of [['icon-192', 192, 0], ['icon-512', 512, 0], ['apple-touch-icon', 180, 0, '#1f5a38'], ['icon-maskable-512', 512, 0.12, '#2a7348']]) {
+for (const [name, size, markup] of jobs) {
   await p.setViewportSize({ width: size, height: size });
-  const inner = svg.replace('<svg ', `<svg width="${size * (1 - 2 * pad)}" height="${size * (1 - 2 * pad)}" `).replace(bg ? 'rx="112"' : '__', bg ? 'rx="0"' : '__');
-  await p.setContent(`<html><body style="margin:0;background:${bg || 'transparent'};display:grid;place-items:center;width:${size}px;height:${size}px">${inner}</body></html>`);
-  await p.screenshot({ path: `../public/icons/${name}.png`, omitBackground: !bg });
+  // Scale the SVG to the canvas exactly; no extra padding (the star already has ~20% inset).
+  const scaled = markup.replace('<svg ', `<svg width="${size}" height="${size}" `);
+  await p.setContent(`<!doctype html><html><head><style>*{margin:0;padding:0}html,body{width:${size}px;height:${size}px;background:#0B1A33;overflow:hidden}</style></head><body>${scaled}</body></html>`);
+  await p.screenshot({ path: path.join(icons, `${name}.png`), omitBackground: false });
 }
 await b.close();
+console.log('wrote', jobs.map(j => j[0]).join(', '));

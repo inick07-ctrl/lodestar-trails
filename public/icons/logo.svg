@@ -1,10 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Lodestar">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3f8f5f"/><stop offset="1" stop-color="#1f5a38"/></linearGradient>
-    <linearGradient id="m" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e9a256"/><stop offset="1" stop-color="#c76d1f"/></linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B1A33"/>
+      <stop offset="1" stop-color="#13284D"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="48%" r="42%">
+      <stop offset="0" stop-color="#2A4C7A" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#0B1A33" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="star" x1="256" y1="106" x2="256" y2="406" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#D7DEE8"/>
+    </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#g)"/>
-  <path d="M256 70 L282 196 L400 222 L282 248 L256 372 L230 248 L112 222 L230 196 Z" fill="#fffaf0"/>
-  <path d="M40 470 L170 300 L240 380 L320 270 L472 470 Z" fill="url(#m)" opacity=".95"/>
-  <path d="M320 270 L350 310 L330 320 L310 300 Z M170 300 L195 333 L176 340 Z" fill="#fff4e0" opacity=".85"/>
+  <rect width="512" height="512" rx="114" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="114" fill="url(#glow)"/>
+  <path fill="url(#star)" d="M256 106 L279.33 232.67 L406 256 L279.33 279.33 L256 406 L232.67 279.33 L106 256 L232.67 232.67 Z"/>
 </svg>

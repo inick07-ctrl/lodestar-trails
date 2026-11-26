@@ -1,10 +1,10 @@
 // Lodestar service worker: offline app shell + offline map tiles. No analytics, no tracking.
-const VERSION = 'ls-shell-v1';
+const VERSION = 'ls-shell-v2';
 const TILE_CACHE = 'ls-tiles-v1';
 const RUNTIME = 'ls-runtime-v1';
 const RUNTIME_MAX = 3000;
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/geo.js', 'js/db.js', 'js/trails.js', 'js/style.js', 'js/offline.js', 'js/ui.js',
-  'vendor/maplibre-gl-csp.js', 'vendor/maplibre-gl-csp-worker.js', 'vendor/maplibre-gl.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/logo.svg'];
+  'vendor/maplibre-gl-csp.js', 'vendor/maplibre-gl-csp-worker.js', 'vendor/maplibre-gl.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/icon-maskable-512.png', 'icons/favicon-32.png', 'icons/favicon-16.png', 'icons/logo.svg'];
 const GLYPHS = ['Noto Sans Regular', 'Noto Sans Bold', 'Noto Sans Italic'].flatMap(f => ['0-255', '256-511', '8192-8447'].map(r => `https://tiles.openfreemap.org/fonts/${encodeURIComponent(f)}/${r}.pbf`));
 
 self.addEventListener('install', e => {
