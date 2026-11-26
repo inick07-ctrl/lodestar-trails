@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Lodestar — Off-grid trail maps</title>
+<meta name="description" content="Offline trail maps for hiking and offroad. No accounts, no tracking — your data stays on your device.">
+<meta name="theme-color" content="#f4f2ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151816" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Lodestar">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body data-mode="hike">
+<div id="map" aria-label="Map"></div>
+
+<header class="topbar" id="topbar">
+  <form class="search glass" id="searchForm" autocomplete="off">
+    <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="Search trails, parks, towns" enterkeyhint="search">
+  </form>
+  <div class="seg glass" id="modeSeg" role="tablist">
+    <button type="button" data-mode="hike" class="on"><span>🥾</span> Hike</button>
+    <button type="button" data-mode="gx"><span>🚙</span> GX Offroad</button>
+    <i class="seg-thumb"></i>
+  </div>
+</header>
+
+<div id="navBanner" class="glass nav-banner" hidden></div>
+<div id="recHud" class="glass rec-hud" hidden></div>
+<div id="statusPill" class="status-pill" hidden></div>
+
+<div class="fabs" id="fabs">
+  <button class="fab glass" id="btnLayers" aria-label="Map layers"><svg viewBox="0 0 24 24" class="ico"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg></button>
+  <button class="fab glass" id="btnLocate" aria-label="My location"><svg viewBox="0 0 24 24" class="ico"><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2" class="fillc"/></svg></button>
+  <button class="fab glass" id="btnCompass" aria-label="Reset north" hidden><svg viewBox="0 0 24 24" class="ico" id="compassIco"><path d="M12 3 8 12h8Z" class="fillr"/><path d="m12 21-4-9h8Z"/></svg></button>
+  <button class="fab glass" id="btnWaypoint" aria-label="Drop waypoint"><svg viewBox="0 0 24 24" class="ico"><path d="M12 21s-6-5.5-6-11a6 6 0 1 1 12 0c0 5.5-6 11-6 11Z"/><path d="M12 7v6M9 10h6"/></svg></button>
+</div>
+
+<div id="drawLayer" class="draw-layer" hidden><div id="drawRect" class="draw-rect"></div></div>
+<div id="crosshair" class="crosshair" hidden></div>
+
+<section id="sheet" class="sheet glass" data-detent="peek" aria-live="polite">
+  <div class="grab" id="grab"><i></i></div>
+  <div class="sheet-body" id="sheetBody"></div>
+</section>
+
+<nav class="tabbar glass" id="tabbar">
+  <button data-tab="explore" class="on"><svg viewBox="0 0 24 24" class="ico"><path d="m3 20 6-15 4 9 3-5 5 11Z"/></svg><span>Explore</span></button>
+  <button data-tab="record"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" class="fillc"/></svg><span>Record</span></button>
+  <button data-tab="saved"><svg viewBox="0 0 24 24" class="ico"><path d="M6 3h12v18l-6-4-6 4Z"/></svg><span>Saved</span></button>
+  <button data-tab="offline"><svg viewBox="0 0 24 24" class="ico"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span>Offline</span></button>
+  <button data-tab="more"><svg viewBox="0 0 24 24" class="ico"><circle cx="5" cy="12" r="1.6" class="fillc"/><circle cx="12" cy="12" r="1.6" class="fillc"/><circle cx="19" cy="12" r="1.6" class="fillc"/></svg><span>More</span></button>
+</nav>
+
+<div id="modalWrap" class="modal-wrap" hidden><div class="modal glass" id="modal"></div></div>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="fileGpx" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+<input type="file" id="filePhoto" accept="image/*" hidden>
+<noscript>Lodestar needs JavaScript to run.</noscript>
+<script src="vendor/maplibre-gl-csp.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

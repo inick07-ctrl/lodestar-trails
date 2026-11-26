@@ -1,0 +1,13 @@
+import { chromium } from 'playwright-core';
+const URL = process.env.URL || 'http://localhost:8765/';
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox', '--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, geolocation: { latitude: 45.3805, longitude: -94.7114 }, permissions: ['geolocation'], userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/130 Mobile Safari/537.36' });
+const p = await ctx.newPage();
+p.on('console', m => { if (['error', 'warning'].includes(m.type())) console.log('[console]', m.type(), m.text().slice(0, 300)); });
+p.on('response', r => { if (/interpreter/.test(r.url())) console.log('[resp]', r.status(), r.url()); });
+p.on('pageerror', e => console.log('[pageerror]', e.message));
+await p.goto(URL, { waitUntil: 'load' });
+await p.waitForTimeout(70000);
+console.log('trails:', await p.evaluate(() => window.__lodestar.st.data.trails.size));
+await p.screenshot({ path: '/workspace/lodestar-shots/01-explore.png' });
+await b.close();
