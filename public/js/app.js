@@ -1174,14 +1174,13 @@ function generateRecoveryBox() {
 }
 
 // ---------------- account gate ----------------
-const AUTH_BG = `<svg class="auth-mtn" viewBox="0 0 400 160" preserveAspectRatio="none" aria-hidden="true"><path d="M0 160V96l52-40 38 28 62-62 54 52 40-30 70 58 44-30 40 26v62Z" fill="#1E3A66"/><path d="M0 160v-34l70-34 48 26 74-48 66 52 52-26 90 40v24Z" fill="#2A4A7A"/></svg>`;
 // Shows the full-screen sign-in / create-account page. Resolves with the user once signed in.
 function authGate(expired = false) {
   return new Promise(resolve => {
     $('#auth')?.remove();
     const el = document.createElement('div'); el.id = 'auth'; el.className = 'auth'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Sign in to Lodestar');
     let mode = 'signin';
-    el.innerHTML = `${AUTH_BG}<div class="auth-inner">
+    el.innerHTML = `<div class="auth-inner">
       <img src="icons/icon-192.png" alt="" class="auth-logo" width="76" height="76">
       <h1>Lodestar</h1><p class="auth-tag">Off-grid trail maps for hikes and drives</p>
       ${expired ? '<p class="auth-note warn">Your session ended. Sign in again to keep syncing.</p>' : ''}

@@ -240,12 +240,16 @@ body.navigating .topbar, body.navigating .status-pill { visibility: hidden; }
 /* ---------- auth page ---------- */
 body.locked #topbar, body.locked #fabs, body.locked #sheet, body.locked #tabbar, body.locked #statusPill { visibility: hidden; }
 .auth { position: fixed; inset: 0; z-index: 50; overflow-y: auto; -webkit-overflow-scrolling: touch; color: #F2F5FA;
-  background: radial-gradient(120% 70% at 50% 0%, #1A3360 0%, rgba(19,40,77,0) 60%), linear-gradient(180deg, #13284D 0%, #0B1A33 70%);
+  background-color: #070E1C;
+  background-image: url('../img/auth-bg.svg');
+  background-repeat: no-repeat; background-position: center top; background-size: cover;
   padding: calc(var(--safe-t) + 44px) 20px calc(env(safe-area-inset-bottom, 0px) + 28px); transition: opacity .35s, transform .35s; }
 .auth.leaving { opacity: 0; transform: scale(1.03); pointer-events: none; }
-.auth-mtn { position: fixed; left: 0; right: 0; bottom: 0; width: 100%; height: 22vh; opacity: .55; pointer-events: none; }
 .auth-inner { position: relative; max-width: 380px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; }
-.auth-logo { width: 76px; height: 76px; border-radius: 18px; box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 .5px rgba(255,255,255,.15); }
+.auth-inner::before { content: ''; position: absolute; top: -10px; left: 50%; width: 260px; height: 260px; margin-left: -130px;
+  background: radial-gradient(circle, rgba(200,214,245,.38) 0%, rgba(80,120,190,.12) 42%, transparent 70%);
+  pointer-events: none; z-index: -1; }
+.auth-logo { width: 76px; height: 76px; border-radius: 18px; box-shadow: 0 0 0 .5px rgba(255,255,255,.18), 0 10px 40px rgba(0,0,0,.35), 0 0 36px rgba(210,224,255,.35); }
 .auth h1 { margin: 16px 0 2px; font-size: 32px; font-weight: 700; letter-spacing: -.025em; }
 .auth-tag { margin: 0 0 22px; color: #A9B6CC; font-size: 15px; }
 .auth-note { font-size: 14px; margin: -8px 0 16px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,.08); }
@@ -255,7 +259,7 @@ body.locked #topbar, body.locked #fabs, body.locked #sheet, body.locked #tabbar,
 .auth-seg button.on { color: #0B1A33; }
 .auth-seg i { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 9px; background: #F2F5FA; box-shadow: 0 2px 8px rgba(0,0,0,.25); transition: transform .28s cubic-bezier(.3,.7,.2,1); }
 .auth-seg.right i { transform: translateX(100%); }
-.auth-card { width: 100%; background: rgba(255,255,255,.07); border: .5px solid rgba(255,255,255,.14); border-radius: 18px; padding: 6px 16px 16px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.auth-card { width: 100%; background: rgba(255,255,255,.08); border: .5px solid rgba(255,255,255,.16); border-radius: 18px; padding: 6px 16px 16px; backdrop-filter: blur(28px) saturate(140%); -webkit-backdrop-filter: blur(28px) saturate(140%); }
 .af { display: block; padding: 10px 0; border-bottom: .5px solid rgba(255,255,255,.12); }
 .af[hidden] { display: none; }
 .af span { display: block; font-size: 12.5px; font-weight: 600; color: #A9B6CC; margin-bottom: 4px; }
