@@ -15,7 +15,8 @@ const { neon } = await import('@neondatabase/serverless');
 const q = neon(process.env.DATABASE_URL);
 const users = await q`select id from users where email like 'lodestar-e2e-%@example.com' or email like 'lodestar-test-%@example.com'`;
 if (users.length) await q`delete from users where id = any(${users.map(u => u.id)})`;
-const rates = await q`delete from rate_limits where key like '%lodestar-e2e%' or key like '%lodestar-test%' returning key`;
+const rates = await q`delete from rate_limits where key like '%lodestar-e2e%' or key like '%lodestar-test%'
+  or key like 'recover:%' or key like 'signup:ip:%' or key like 'login:ip:%' or key like 'recovery:%' returning key`;
 const left = await q`select
   (select count(*)::int from users where email like 'lodestar-e2e-%@example.com' or email like 'lodestar-test-%@example.com') as test_users,
   (select count(*)::int from users) as users,

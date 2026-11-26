@@ -14,6 +14,17 @@ async function dismissHint(page) {
   await page.waitForSelector('#modal [data-x]', { timeout: 6000 }).then(() => page.click('#modal [data-x]')).catch(() => { });
 }
 
+export async function confirmRecovery(page) {
+  await page.waitForSelector('#recovCode', { timeout: 25000 });
+  const recoveryCode = (await page.textContent('#recovCode')).trim();
+  const go = page.locator('#recovGo');
+  if (await go.isDisabled()) {
+    await page.click('#recovSaved');
+  }
+  await go.click();
+  return recoveryCode;
+}
+
 export async function signUp(page, creds = testCreds()) {
   await page.waitForSelector('#auth .auth-inner', { timeout: 30000 });
   await page.click('[data-am="signup"]');
@@ -21,6 +32,7 @@ export async function signUp(page, creds = testCreds()) {
   await page.fill('#aEmail', creds.email);
   await page.fill('#aPass', creds.password);
   await page.click('#aGo');
+  creds.recoveryCode = await confirmRecovery(page);
   await page.waitForSelector('#auth', { state: 'detached', timeout: 25000 });
   await dismissHint(page);
   return creds;

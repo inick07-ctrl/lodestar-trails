@@ -3,7 +3,7 @@
 A mobile-first, installable PWA for hiking and overland/offroad driving trips that keeps working with no signal.
 Sign-in is required. Favorites, tracks, waypoints, planned routes, notes and your vehicle sync privately to your account
 (Neon Postgres + Vercel serverless functions in `/api`) and are cached on-device (IndexedDB + Cache API) so the app works offline
-after you've signed in once. Signing out erases the device copy. No analytics, no tracking. Photos stay on the device.
+after you've signed in once. Signing out erases the device copy. There is no email-based password reset: at sign-up (and whenever you reset or regenerate) you get a one-time recovery code, shown once. No analytics, no tracking. Photos stay on the device.
 
 Local dev: `vercel env pull .env.local` (gitignored), then `node tests/dev-server.mjs` and `node tests/test-accounts.mjs`.
 

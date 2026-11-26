@@ -1,6 +1,7 @@
 // Accounts E2E against the local dev server (tests/dev-server.mjs). Test password is random and never printed.
 import { chromium } from 'playwright-core';
 import crypto from 'node:crypto';
+import { confirmRecovery } from './auth-helper.mjs';
 const URL = process.env.URL || 'http://localhost:8788/';
 const SHOTS = '/workspace/lodestar-shots/';
 const PW = crypto.randomBytes(9).toString('base64url') + 'a1', PW2 = crypto.randomBytes(9).toString('base64url') + 'b2';
@@ -36,6 +37,7 @@ try {
   await pa.screenshot({ path: SHOTS + 'auth-signup.png' });
   await pa.fill('#aEmail', EMAIL); await pa.fill('#aPass', PW);
   await pa.click('#aGo');
+  await confirmRecovery(pa);
   await pa.waitForSelector('#auth', { state: 'detached', timeout: 20000 });
   ok(await pa.isVisible('#tabbar'), 'signed up → app unlocked');
   ok(await ev(pa, () => window.__lodestar.acct.user?.email) === EMAIL, 'acct.user set');
@@ -81,6 +83,7 @@ try {
   const EMAIL_C = EMAIL.replace('e2e-', 'e2e-c-');
   await pc.goto(URL); await pc.waitForSelector('#auth .auth-inner');
   await pc.click('[data-am="signup"]'); await pc.fill('#aEmail', EMAIL_C); await pc.fill('#aPass', PW); await pc.click('#aGo');
+  await confirmRecovery(pc);
   await pc.waitForSelector('#auth', { state: 'detached', timeout: 20000 });
   await pc.waitForSelector('#modal [data-x]', { timeout: 6000 }).then(() => pc.click('#modal [data-x]')).catch(() => { });
   ok(await idbCount(pc, 'favorites') === 0 && !(await ev(pc, () => window.__lodestar.st.vehicle)), 'other account sees none of it');

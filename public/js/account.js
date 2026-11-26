@@ -44,8 +44,22 @@ export async function verifySession() {
   try { const { user } = await api('auth/me'); await adoptUser(user); return 'ok'; }
   catch (e) { if (e.status === 401) return 'expired'; return 'offline'; }
 }
-export async function signUp(email, password, name) { const { user } = await api('auth/signup', { method: 'POST', body: { email, password, name } }); await adoptUser(user); await db.kvSet('syncCursor', 0); await queueAllLocal(); return user; }
+export async function signUp(email, password, name) {
+  const { user, recoveryCode } = await api('auth/signup', { method: 'POST', body: { email, password, name } });
+  await adoptUser(user); await db.kvSet('syncCursor', 0); await queueAllLocal();
+  return { user, recoveryCode };
+}
 export async function signIn(email, password) { const { user } = await api('auth/login', { method: 'POST', body: { email, password } }); const prev = await db.kvGet('owner', null); await adoptUser(user); if (prev !== user.id) await db.kvSet('syncCursor', 0); return user; }
+export async function recoverPassword(email, code, next) {
+  const { user, recoveryCode } = await api('auth/recover', { method: 'POST', body: { email, code, next } });
+  const prev = await db.kvGet('owner', null); await adoptUser(user); if (prev !== user.id) await db.kvSet('syncCursor', 0);
+  return { user, recoveryCode };
+}
+export async function generateRecovery(password) {
+  const { recoveryCode, user } = await api('auth/recovery', { method: 'POST', body: { password } });
+  if (user) await adoptUser(user);
+  return recoveryCode;
+}
 export async function signOut() {
   try { await syncNow(); } catch { }
   try { await api('auth/logout', { method: 'POST', body: {} }); } catch { }

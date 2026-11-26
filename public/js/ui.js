@@ -27,11 +27,11 @@ export function toast(msg, ms = 2600) {
   clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms);
 }
 
-export function modal(html, onMount) {
+export function modal(html, onMount, opts = {}) {
   const w = $('#modalWrap'), m = $('#modal');
   m.innerHTML = html; w.hidden = false;
   const close = () => { w.hidden = true; m.innerHTML = ''; };
-  w.onclick = e => { if (e.target === w) close(); };
+  w.onclick = e => { if (e.target === w && !opts.sticky) close(); };
   onMount?.(m, close);
   return close;
 }

@@ -1,7 +1,7 @@
 // Lodestar — off-grid trail maps. Data is cached on-device and synced privately to the signed-in account.
 import * as G from './geo.js';
 import { db, uid } from './db.js';
-import { acct, restoreSession, verifySession, signIn, signUp, signOut, changePassword, updateName, deleteAccount, syncNow, pendingCount } from './account.js';
+import { acct, restoreSession, verifySession, signIn, signUp, signOut, changePassword, updateName, deleteAccount, recoverPassword, generateRecovery, syncNow, pendingCount } from './account.js';
 import { buildStyle, RASTERS } from './style.js';
 import { fetchOverpass, difficultyFor, DIFF_LABEL, poisNear, nearestParking } from './trails.js';
 import { planDownload, downloadArea, deleteArea, refreshAreaData, MAX_TILES, MAX_AREA_KM2, TILE_CACHE } from './offline.js';
@@ -85,7 +85,7 @@ function maybeInstallHint() {
   addEventListener('beforeinstallprompt', e => { e.preventDefault(); st.installEvt = e; });
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  db.kvGet('installHintShown', false).then(shown => { if (!standalone && ios && !shown) setTimeout(() => { installHelp(); db.kvSet('installHintShown', true); }, 2500); });
+  db.kvGet('installHintShown', false).then(shown => { if (!standalone && ios && !shown) setTimeout(() => { db.kvSet('installHintShown', true); if ($('#modalWrap')?.hidden !== false && !$('#auth')) installHelp(); }, 2500); });
 }
 function installHelp() {
   modal(`<h2>Add Lodestar to your Home Screen</h2>
@@ -1119,6 +1119,60 @@ function layersSheet() {
   });
 }
 
+
+function recoveryMarkup(code, heading = 'Your recovery code') {
+  return `<h2 class="recov-h">${esc(heading)}</h2>
+    <p class="recov-lead">Lodestar can't email a reset. This code is the only way to recover your account if you forget your password. We'll only show it once — save it in a safe place now.</p>
+    <div class="recov-code" id="recovCode">${esc(code)}</div>
+    <button type="button" class="btn recov-copy" id="recovCopy">Copy</button>
+    <label class="recov-save"><input type="checkbox" id="recovSaved"> I've saved this code in a safe place</label>
+    <button type="button" class="auth-btn recov-go" id="recovGo" disabled>Continue</button>`;
+}
+function wireRecovery(root, code, onDone) {
+  const go = root.querySelector('#recovGo'), saved = root.querySelector('#recovSaved');
+  saved.onchange = () => { go.disabled = !saved.checked; };
+  root.querySelector('#recovCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(code); }
+    catch { const t = document.createElement('textarea'); t.value = code; t.style.position = 'fixed'; t.style.left = '-9999px'; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); } finally { t.remove(); } }
+    root.querySelector('#recovCopy').textContent = 'Copied';
+    toast('Recovery code copied');
+  };
+  go.onclick = () => onDone();
+}
+function presentRecovery(host, code, heading) {
+  return new Promise(resolve => {
+    const inner = host.querySelector('.auth-inner') || host;
+    inner.innerHTML = `<img src="icons/icon-192.png" alt="" class="auth-logo" width="76" height="76">
+      <h1>Lodestar</h1>${recoveryMarkup(code, heading)}`;
+    wireRecovery(inner, code, resolve);
+  });
+}
+function showRecoveryModal(code, heading) {
+  return new Promise(resolve => {
+    modal(`<div class="recov-modal">${recoveryMarkup(code, heading)}</div>`, (m, close) => {
+      wireRecovery(m, code, () => { close(); resolve(); });
+    }, { sticky: true });
+  });
+}
+function generateRecoveryBox() {
+  modal(`<h2>Generate a new recovery code</h2><p class="sub">This replaces any code you already have. Enter your current password, then save the new code — we'll only show it once.</p>
+    <div class="group form"><div><label for="rcPw">Password</label><input class="input" id="rcPw" type="password" autocomplete="current-password" maxlength="128"></div></div>
+    <p class="err-line" id="rcErr" hidden></p>
+    <button type="button" class="btn primary block" id="rcGo" style="margin-top:12px">Generate code</button><button type="button" class="btn block" style="margin-top:8px" data-x>Cancel</button>`, (m, close) => {
+    m.querySelector('[data-x]').onclick = close;
+    m.querySelector('#rcGo').onclick = async () => {
+      const er = m.querySelector('#rcErr'), btn = m.querySelector('#rcGo'), pw = m.querySelector('#rcPw').value;
+      if (!navigator.onLine) { er.textContent = 'You need a connection to generate a recovery code.'; er.hidden = false; return; }
+      btn.disabled = true;
+      try {
+        const code = await generateRecovery(pw);
+        m.innerHTML = `<div class="recov-modal">${recoveryMarkup(code, 'Your new recovery code')}</div>`;
+        wireRecovery(m, code, () => { close(); if (st.view?.name === 'more') renderMore(); });
+      } catch (e) { er.textContent = e.message; er.hidden = false; btn.disabled = false; }
+    };
+  }, { sticky: true });
+}
+
 // ---------------- account gate ----------------
 const AUTH_BG = `<svg class="auth-mtn" viewBox="0 0 400 160" preserveAspectRatio="none" aria-hidden="true"><path d="M0 160V96l52-40 38 28 62-62 54 52 40-30 70 58 44-30 40 26v62Z" fill="#1E3A66"/><path d="M0 160v-34l70-34 48 26 74-48 66 52 52-26 90 40v24Z" fill="#2A4A7A"/></svg>`;
 // Shows the full-screen sign-in / create-account page. Resolves with the user once signed in.
@@ -1135,49 +1189,78 @@ function authGate(expired = false) {
       <form class="auth-card" id="authForm" novalidate>
         <label class="af af-name" hidden><span>Name <em>optional</em></span><input id="aName" type="text" autocomplete="name" maxlength="60" placeholder="What should we call you?"></label>
         <label class="af"><span>Email</span><input id="aEmail" type="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false" required maxlength="254" placeholder="you@example.com"></label>
-        <label class="af"><span>Password</span><div class="pw"><input id="aPass" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="Required"><button type="button" class="pw-eye" id="aEye" aria-label="Show password">Show</button></div></label>
+        <label class="af af-code" hidden><span>Recovery code</span><input id="aCode" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="32" placeholder="XXXXX-XXXXX-XXXXX-XXXXX"></label>
+        <label class="af af-pass"><span id="aPassLbl">Password</span><div class="pw"><input id="aPass" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="Required"><button type="button" class="pw-eye" id="aEye" aria-label="Show password">Show</button></div></label>
         <p class="af-hint" id="aHint" hidden>At least 8 characters.</p>
         <p class="auth-err" id="aErr" role="alert" hidden></p>
         <button class="auth-btn" id="aGo" type="submit">Sign In</button>
       </form>
-      <p class="auth-foot">Your favorites, tracks, waypoints, routes and vehicle sync privately to your account. No ads, no tracking.</p>
+      <button type="button" class="auth-link" id="aForgot">Forgot password?</button>
+      <button type="button" class="auth-link" id="aBack" hidden>← Back to Sign In</button>
+      <p class="auth-foot" id="aFoot">Your favorites, tracks, waypoints, routes and vehicle sync privately to your account. No ads, no tracking. After you create an account you'll get a recovery code — Lodestar can't email a reset.</p>
       <p class="auth-foot small" id="aOff" ${navigator.onLine ? 'hidden' : ''}>You're offline. Connect once to sign in — after that Lodestar works with no signal.</p>
     </div>`;
     document.body.appendChild(el);
     document.body.classList.add('locked');
     const setMode = m => {
-      mode = m; const up = m === 'signup';
+      mode = m; const up = m === 'signup', rec = m === 'recover';
       $$('[data-am]', el).forEach(b => b.classList.toggle('on', b.dataset.am === m));
       el.querySelector('.auth-seg').classList.toggle('right', up);
-      el.querySelector('.af-name').hidden = !up; $('#aHint').hidden = !up; $('#aErr').hidden = true;
-      $('#aPass').autocomplete = up ? 'new-password' : 'current-password'; $('#aPass').placeholder = up ? 'Create a password' : 'Required';
-      $('#aGo').textContent = up ? 'Create Account' : 'Sign In';
+      el.querySelector('.auth-seg').hidden = rec;
+      el.querySelector('.af-name').hidden = !up;
+      el.querySelector('.af-code').hidden = !rec;
+      $('#aHint').hidden = !(up || rec); $('#aErr').hidden = true;
+      $('#aForgot').hidden = m !== 'signin'; $('#aBack').hidden = !rec;
+      $('#aPassLbl').textContent = rec ? 'New password' : 'Password';
+      $('#aPass').autocomplete = (up || rec) ? 'new-password' : 'current-password';
+      $('#aPass').placeholder = rec ? 'Choose a new password' : up ? 'Create a password' : 'Required';
+      $('#aGo').textContent = rec ? 'Reset password' : up ? 'Create Account' : 'Sign In';
+      $('#aFoot').textContent = rec
+        ? "Enter the recovery code you saved when you created your account (or generated in Profile). You'll get a new code after the reset — the old one will no longer work."
+        : "Your favorites, tracks, waypoints, routes and vehicle sync privately to your account. No ads, no tracking. After you create an account you'll get a recovery code — Lodestar can't email a reset.";
     };
     el._setMode = setMode;
     $$('[data-am]', el).forEach(b => b.onclick = () => setMode(b.dataset.am));
+    $('#aForgot').onclick = () => setMode('recover');
+    $('#aBack').onclick = () => setMode('signin');
     $('#aEye').onclick = () => { const i = $('#aPass'), show = i.type === 'password'; i.type = show ? 'text' : 'password'; $('#aEye').textContent = show ? 'Hide' : 'Show'; $('#aEye').setAttribute('aria-label', show ? 'Hide password' : 'Show password'); };
     const onNet = () => { const o = $('#aOff'); if (o) o.hidden = navigator.onLine; };
     addEventListener('online', onNet); addEventListener('offline', onNet);
+    const finishAuth = async (u, recoveryCode, welcome) => {
+      $('#aPass').value = ''; if ($('#aCode')) $('#aCode').value = '';
+      if (recoveryCode) await presentRecovery(el, recoveryCode);
+      removeEventListener('online', onNet); removeEventListener('offline', onNet);
+      el.classList.add('leaving'); document.body.classList.remove('locked');
+      setTimeout(() => el.remove(), 350);
+      toast(welcome);
+      resolve(u);
+    };
     $('#authForm').onsubmit = async e => {
       e.preventDefault();
-      const err = $('#aErr'), go = $('#aGo'), email = $('#aEmail').value.trim(), pw = $('#aPass').value, name = $('#aName').value.trim();
+      const err = $('#aErr'), go = $('#aGo'), email = $('#aEmail').value.trim(), pw = $('#aPass').value, name = $('#aName').value.trim(), code = $('#aCode').value.trim();
       const fail = m => { err.textContent = m; err.hidden = false; };
       err.hidden = true;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('Enter a valid email address.');
-      if (pw.length < 8) return fail(mode === 'signup' ? 'Use at least 8 characters for your password.' : 'Enter your password.');
-      if (!navigator.onLine) return fail('You need a connection to sign in the first time.');
-      go.disabled = true; go.textContent = mode === 'signup' ? 'Creating account…' : 'Signing in…';
+      if (mode === 'recover') {
+        if (!code) return fail('Enter your recovery code.');
+        if (pw.length < 8) return fail('Use at least 8 characters for your new password.');
+      } else if (pw.length < 8) return fail(mode === 'signup' ? 'Use at least 8 characters for your password.' : 'Enter your password.');
+      if (!navigator.onLine) return fail(mode === 'recover' ? 'You need a connection to reset your password.' : 'You need a connection to sign in the first time.');
+      go.disabled = true; go.textContent = mode === 'signup' ? 'Creating account…' : mode === 'recover' ? 'Resetting…' : 'Signing in…';
       try {
-        const u = mode === 'signup' ? await signUp(email, pw, name) : await signIn(email, pw);
-        $('#aPass').value = '';
-        removeEventListener('online', onNet); removeEventListener('offline', onNet);
-        el.classList.add('leaving'); document.body.classList.remove('locked');
-        setTimeout(() => el.remove(), 350);
-        toast(mode === 'signup' ? `Welcome to Lodestar${u.name ? ', ' + u.name : ''}` : `Signed in as ${u.name || u.email}`);
-        resolve(u);
+        if (mode === 'signup') {
+          const { user: u, recoveryCode } = await signUp(email, pw, name);
+          await finishAuth(u, recoveryCode, `Welcome to Lodestar${u.name ? ', ' + u.name : ''}`);
+        } else if (mode === 'recover') {
+          const { user: u, recoveryCode } = await recoverPassword(email, code, pw);
+          await finishAuth(u, recoveryCode, 'Password reset. Save your new recovery code.');
+        } else {
+          const u = await signIn(email, pw);
+          await finishAuth(u, null, `Signed in as ${u.name || u.email}`);
+        }
       } catch (x) {
         fail(x.status === 429 ? 'Too many attempts. Please wait a few minutes and try again.' : x.message || 'Something went wrong. Try again.');
-        go.disabled = false; go.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
+        go.disabled = false; go.textContent = mode === 'signup' ? 'Create Account' : mode === 'recover' ? 'Reset password' : 'Sign In';
       }
     };
     setTimeout(() => $('#aEmail')?.focus({ preventScroll: true }), 300);
@@ -1260,6 +1343,7 @@ function renderMore() {
     <h3>Account</h3><div class="group">
       <button id="pName"><label>Name</label><span class="muted">${esc(u.name || 'Add')}</span>${ICON.chev}</button>
       <button id="pPass"><label>Change password</label>${ICON.chev}</button>
+      <button id="pRecovery"><label>${u.hasRecovery ? 'Generate new recovery code' : 'Generate recovery code'}</label>${ICON.chev}</button>
       <button id="pOut"><label class="red">Sign out</label></button>
     </div>
     <h3>Settings</h3>
@@ -1288,6 +1372,7 @@ function renderMore() {
   $('#pVeh').onclick = () => editVehicle();
   $('#pName').onclick = async () => { const n = await promptBox('Your name', u.name || '', 'Name (optional)'); if (n == null) return; try { await updateName(n.trim()); renderMore(); toast('Name updated'); } catch (e) { toast(e.message); } };
   $('#pPass').onclick = changePasswordBox;
+  $('#pRecovery').onclick = generateRecoveryBox;
   $('#pOut').onclick = async () => {
     if (!(await confirmBox('Sign out?', `Your data stays safe in your account. Lodestar will erase it — and offline maps — from this device.${acct.pending ? ` ${acct.pending} unsynced change${acct.pending > 1 ? 's' : ''} will be lost if you're offline.` : ''}`, 'Sign Out', true))) return;
     if (st.rec) { toast('Stop recording before signing out'); return; }
