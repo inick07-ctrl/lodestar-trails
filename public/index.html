@@ -19,7 +19,7 @@
 <link rel="stylesheet" href="vendor/maplibre-gl.css">
 <link rel="stylesheet" href="css/app.css">
 </head>
-<body data-mode="hike">
+<body data-mode="hike" class="locked">
 <div id="map" aria-label="Map"></div>
 
 <header class="topbar" id="topbar">
@@ -27,10 +27,13 @@
     <svg viewBox="0 0 24 24" class="ico"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
     <input id="q" type="search" placeholder="Search trails, parks, towns" enterkeyhint="search">
   </form>
-  <div class="seg glass" id="modeSeg" role="tablist">
-    <button type="button" data-mode="hike" class="on"><span>🥾</span> Hike</button>
-    <button type="button" data-mode="gx"><span>🚙</span> GX Offroad</button>
-    <i class="seg-thumb"></i>
+  <div class="mode-row">
+    <div class="seg glass" id="modeSeg" role="tablist">
+      <button type="button" data-mode="hike" class="on"><span>🥾</span> Hike</button>
+      <button type="button" data-mode="drive"><span>🚙</span> Drive</button>
+      <i class="seg-thumb"></i>
+    </div>
+    <button type="button" class="vehicle-pill glass" id="vehiclePill" hidden></button>
   </div>
 </header>
 
@@ -58,7 +61,7 @@
   <button data-tab="record"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5" class="fillc"/></svg><span>Record</span></button>
   <button data-tab="saved"><svg viewBox="0 0 24 24" class="ico"><path d="M6 3h12v18l-6-4-6 4Z"/></svg><span>Saved</span></button>
   <button data-tab="offline"><svg viewBox="0 0 24 24" class="ico"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5"/><path d="M4 17v3h16v-3"/></svg><span>Offline</span></button>
-  <button data-tab="more"><svg viewBox="0 0 24 24" class="ico"><circle cx="5" cy="12" r="1.6" class="fillc"/><circle cx="12" cy="12" r="1.6" class="fillc"/><circle cx="19" cy="12" r="1.6" class="fillc"/></svg><span>More</span></button>
+  <button data-tab="more"><svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5c1.2-3.8 4-5.6 7.5-5.6s6.3 1.8 7.5 5.6"/></svg><span>Profile</span></button>
 </nav>
 
 <div id="modalWrap" class="modal-wrap" hidden><div class="modal glass" id="modal"></div></div>

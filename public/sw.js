@@ -1,9 +1,9 @@
-// Lodestar service worker: offline app shell + offline map tiles. No analytics, no tracking.
-const VERSION = 'ls-shell-v3';
+// Lodestar service worker: offline app shell + offline map tiles. Never caches /api (account data). No analytics, no tracking.
+const VERSION = 'ls-shell-v4';
 const TILE_CACHE = 'ls-tiles-v1';
 const RUNTIME = 'ls-runtime-v1';
 const RUNTIME_MAX = 3000;
-const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/geo.js', 'js/db.js', 'js/trails.js', 'js/style.js', 'js/offline.js', 'js/ui.js',
+const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/geo.js', 'js/db.js', 'js/trails.js', 'js/style.js', 'js/offline.js', 'js/ui.js', 'js/account.js',
   'vendor/maplibre-gl-csp.js', 'vendor/maplibre-gl-csp-worker.js', 'vendor/maplibre-gl.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/icon-maskable-512.png', 'icons/favicon-32.png', 'icons/favicon-16.png', 'icons/logo.svg'];
 const GLYPHS = ['Noto Sans Regular', 'Noto Sans Bold', 'Noto Sans Italic'].flatMap(f => ['0-255', '256-511', '8192-8447'].map(r => `https://tiles.openfreemap.org/fonts/${encodeURIComponent(f)}/${r}.pbf`));
 
@@ -67,6 +67,7 @@ self.addEventListener('fetch', e => {
   if (u.startsWith('https://tile.opentopomap.org/')) return; // online only, per provider policy
   const url = new URL(u);
   if (url.origin === location.origin) {
+    if (url.pathname.startsWith('/api/')) return; // account/sync API: always network, never cached
     e.respondWith((async () => {
       const c = await caches.open(VERSION);
       const key = req.mode === 'navigate' ? 'index.html' : req;

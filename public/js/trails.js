@@ -172,7 +172,7 @@ function makeTrail(id, name, ws, act, rtags) {
 export function trailCoords(trail, waysById) { return trail.wayIds.map(id => waysById.get(id)?.coords).filter(Boolean); }
 
 export function difficultyFor(trail, mode, activity) {
-  if (activity === 'offroad' || (mode === 'gx' && !activity)) return trail.diffOff;
+  if (activity === 'offroad' || (mode === 'drive' && !activity)) return trail.diffOff;
   if (activity === 'bike') return Math.max(trail.diffBike, trail.diffHike);
   return trail.diffHike;
 }

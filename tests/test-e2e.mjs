@@ -1,5 +1,7 @@
 import { chromium } from 'playwright-core';
 import { execSync } from 'child_process';
+import { testCreds, signUp, deleteAccount } from './auth-helper.mjs';
+import fs from 'node:fs';
 const URL = process.env.URL || 'http://localhost:8765/';
 const PROFILE = process.env.PROFILE || '/tmp/ls-profile';
 const SHOTS = '/workspace/lodestar-shots/';
@@ -33,8 +35,11 @@ async function planAndFollow() {
     await p.click('#nvEnd'); await wait(500); await p.click('[data-x]').catch(() => {}); await wait(500);
   }
 }
+const CRED = (PROFILE.replace(/\/+$/, '') || '/tmp/ls-profile') + '.creds.json';
 if (phase === 'online') {
   await p.goto(URL, { waitUntil: 'load' });
+  const creds = await signUp(p, testCreds('app'));
+  fs.writeFileSync(CRED, JSON.stringify({ email: creds.email })); // email only, for cleanup; password is not written
   await p.waitForFunction(() => navigator.serviceWorker?.controller || window.__swr, null, { timeout: 30000 }).catch(() => {});
   const sw = await ev(async () => { const r = await navigator.serviceWorker.getRegistration(); return { registered: !!r, active: !!r?.active, state: r?.active?.state, controlled: !!navigator.serviceWorker.controller }; });
   L('SW:', JSON.stringify(sw));
@@ -44,13 +49,13 @@ if (phase === 'online') {
   await p.screenshot({ path: SHOTS + '02-explore-half.png' });
   const first = await p.$('[data-trail]');
   if (first) { await first.click(); await wait(5000); await p.screenshot({ path: SHOTS + '03-trail-detail.png' }); await p.click('#grab'); await wait(600); await p.evaluate(() => document.querySelector('#sheetBody').scrollTop = 500); await wait(300); await p.screenshot({ path: SHOTS + '04-trail-detail-full.png' }); }
-  // GX mode
+  // Drive mode
   await p.click('[data-tab="explore"]'); await wait(300);
-  await p.click('#modeSeg [data-mode="gx"]'); await wait(2500);
-  await p.screenshot({ path: SHOTS + '05-gx-mode.png' });
+  await p.click('#modeSeg [data-mode="drive"]'); await wait(2500);
+  await p.screenshot({ path: SHOTS + '05-drive-mode.png' });
   // dark mode check quickly via settings
   await p.click('[data-tab="more"]'); await wait(500); await p.screenshot({ path: SHOTS + '06-more.png' });
-  await p.click('[data-th="dark"]'); await wait(3500); await p.click('[data-tab="explore"]'); await wait(1500); await p.screenshot({ path: SHOTS + '07-dark-gx.png' });
+  await p.click('[data-th="dark"]'); await wait(3500); await p.click('[data-tab="explore"]'); await wait(1500); await p.screenshot({ path: SHOTS + '07-dark-drive.png' });
   await p.click('[data-tab="more"]'); await wait(300); await p.click('[data-th="auto"]'); await wait(2500);
   await p.click('#modeSeg [data-mode="hike"]'); await wait(800);
   // Record tab
@@ -86,6 +91,8 @@ if (phase === 'online') {
   try { await p.goto(URL, { waitUntil: 'load', timeout: 30000 }); } catch (e) { ok = false; L('navigation failed:', e.message); }
   if (ok) {
     await wait(9000);
+    const authed = await ev(() => !document.querySelector('#auth') && !!window.__lodestar?.acct?.user);
+    L('offline session:', authed ? 'signed in (cached)' : 'MISSING SESSION / AUTH PAGE');
     const r = await ev(() => { const { map, st } = window.__lodestar; const feats = map.querySourceFeatures('ofm', { sourceLayer: 'transportation' }).length; const water = map.querySourceFeatures('ofm', { sourceLayer: 'water' }).length; return { online: navigator.onLine, controlled: !!navigator.serviceWorker.controller, tilesLoaded: map.areTilesLoaded(), roadFeatures: feats, waterFeatures: water, trails: st.data.trails.size, areas: st.areas.length, zoom: map.getZoom().toFixed(1), status: document.querySelector('#statusPill').textContent }; });
     L('OFFLINE:', JSON.stringify(r));
     await p.screenshot({ path: SHOTS + '12-offline-reload.png' });

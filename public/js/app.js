@@ -1,6 +1,7 @@
-// Lodestar — off-grid trail maps. All data stays on this device.
+// Lodestar — off-grid trail maps. Data is cached on-device and synced privately to the signed-in account.
 import * as G from './geo.js';
 import { db, uid } from './db.js';
+import { acct, restoreSession, verifySession, signIn, signUp, signOut, changePassword, updateName, deleteAccount, syncNow, pendingCount } from './account.js';
 import { buildStyle, RASTERS } from './style.js';
 import { fetchOverpass, difficultyFor, DIFF_LABEL, poisNear, nearestParking } from './trails.js';
 import { planDownload, downloadArea, deleteArea, refreshAreaData, MAX_TILES, MAX_AREA_KM2, TILE_CACHE } from './offline.js';
@@ -14,17 +15,24 @@ const st = { // runtime state
   data: { ways: new Map(), trails: new Map(), pois: new Map() }, live: null, areas: [],
   filters: { activity: 'all', diff: -1, len: 'any', dog: false, kid: false, stroller: false, wheelchair: false, fourwd: false },
   query: '', places: [], view: null, viewStack: [], selected: null, pos: null, heading: null, locate: 0, rec: null, nav: null, plan: null,
-  favorites: new Map(), wakeLock: null, installEvt: null, loading: false,
+  favorites: new Map(), wakeLock: null, installEvt: null, loading: false, vehicle: null,
 };
 let map, sheet;
 
 // ---------------- boot ----------------
 async function boot() {
   Object.assign(S, await db.kvGet('settings', {}));
+  if (S.mode !== 'hike' && S.mode !== 'drive') S.mode = S.mode === 'gx' ? 'drive' : 'hike'; // migrate old "gx" mode
   G.units.imperial = S.imperial;
   applyTheme();
+  registerSW();
+  // Accounts are required: nothing loads until someone is signed in on this device.
+  const user = await restoreSession();
+  if (!user) await authGate();
+  else { document.body.classList.remove('locked'); verifySession().then(r => { if (r === 'expired') reauth(user.id); else if (r === 'ok') syncNow(); }); }
+  acct.listeners.add((a, kind) => { if (kind === 'data') reloadUserData(); updateSyncUI(); if (a.expired && !$('#auth')) { a.expired = false; reauth(a.user?.id); } });
   document.body.dataset.mode = S.mode;
-  st.filters.activity = S.mode === 'gx' ? 'offroad' : 'all';
+  st.filters.activity = S.mode === 'drive' ? 'offroad' : 'all';
   sheet = initSheet(onDetent);
   const last = await db.kvGet('lastView', null);
   maplibregl.setWorkerUrl('vendor/maplibre-gl-csp-worker.js');
@@ -45,7 +53,7 @@ async function boot() {
   show('explore');
   online();
   addEventListener('online', online); addEventListener('offline', online);
-  registerSW();
+  if (!user) syncNow();
   resumeRecording();
   maybeInstallHint();
   // first run with nothing cached: load trails around the current view
@@ -103,7 +111,18 @@ async function loadAll() {
   st.live = await db.kvGet('liveData', null);
   rebuildData(datas);
   st.waypoints = await db.all('waypoints');
-  refreshOverlays();
+  st.vehicle = (await db.get('profile', 'vehicle')) || null;
+  refreshOverlays(); updateVehiclePill();
+}
+// Re-read synced data after a pull from the server and refresh whatever is on screen.
+async function reloadUserData() {
+  st.favorites = new Map((await db.all('favorites')).map(f => [f.id, f]));
+  st.waypoints = await db.all('waypoints');
+  st.vehicle = (await db.get('profile', 'vehicle')) || null;
+  if (map?.getSource('wpts')) refreshOverlays();
+  updateVehiclePill();
+  const v = st.view?.name;
+  if (v && ['explore', 'saved', 'more'].includes(v) && !document.activeElement?.matches?.('input,textarea,select')) VIEWS[v](st.view.args);
 }
 function rebuildData(datas) {
   const d = { ways: new Map(), trails: new Map(), pois: new Map() };
@@ -154,14 +173,14 @@ function addOverlays() {
   for (const [k, e] of Object.entries(WPT_ICONS)) if (!map.hasImage('wpt-' + k)) map.addImage('wpt-' + k, emojiImage(e, isDark() ? '#2a2c2b' : '#fff', '#d9822b'), { pixelRatio: 2 });
   for (const s of ['areas', 'ways', 'hl', 'route', 'track', 'pois', 'wpts', 'plan', 'navdone']) if (!map.getSource(s)) map.addSource(s, { type: 'geojson', data: empty() });
   map.addLayer({ id: 'areas-line', type: 'line', source: 'areas', paint: { 'line-color': '#8a7a62', 'line-width': 1.5, 'line-dasharray': [3, 2], 'line-opacity': 0.8 } });
-  const isGx = S.mode === 'gx';
-  map.addLayer({ id: 'ways-faint', type: 'line', source: 'ways', minzoom: 10, filter: isGx ? ['!', ['get', 'o']] : ['!', ['get', 'h']], paint: { 'line-color': c.faint, 'line-width': 1.5 } });
-  map.addLayer({ id: 'ways-case', type: 'line', source: 'ways', minzoom: 9, filter: isGx ? ['get', 'o'] : ['get', 'h'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDark() ? 'rgba(0,0,0,.6)' : 'rgba(255,255,255,.85)', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7] } });
-  const wcol = isGx ? ['match', ['get', 'do'], 0, c.oeasy, 1, c.omod, c.ohard] : ['match', ['get', 'dh'], 0, c.easy, 1, c.mod, c.hard], ww = ['interpolate', ['linear'], ['zoom'], 10, 1.6, 16, 4];
-  map.addLayer({ id: 'ways-line', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isGx ? ['get', 'o'] : ['get', 'h'], ['get', 'paved']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww } });
-  map.addLayer({ id: 'ways-dash', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isGx ? ['get', 'o'] : ['get', 'h'], ['!', ['get', 'paved']]], layout: { 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww, 'line-dasharray': [2.2, 1.1] } });
-  map.addLayer({ id: 'hl-glow', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isGx ? '#f0a050' : '#4fb477', 'line-width': 12, 'line-opacity': 0.35 } });
-  map.addLayer({ id: 'hl-line', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isGx ? '#d9822b' : '#2f7d4f', 'line-width': 5 } });
+  const isDrive = S.mode === 'drive';
+  map.addLayer({ id: 'ways-faint', type: 'line', source: 'ways', minzoom: 10, filter: isDrive ? ['!', ['get', 'o']] : ['!', ['get', 'h']], paint: { 'line-color': c.faint, 'line-width': 1.5 } });
+  map.addLayer({ id: 'ways-case', type: 'line', source: 'ways', minzoom: 9, filter: isDrive ? ['get', 'o'] : ['get', 'h'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDark() ? 'rgba(0,0,0,.6)' : 'rgba(255,255,255,.85)', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 3, 16, 7] } });
+  const wcol = isDrive ? ['match', ['get', 'do'], 0, c.oeasy, 1, c.omod, c.ohard] : ['match', ['get', 'dh'], 0, c.easy, 1, c.mod, c.hard], ww = ['interpolate', ['linear'], ['zoom'], 10, 1.6, 16, 4];
+  map.addLayer({ id: 'ways-line', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isDrive ? ['get', 'o'] : ['get', 'h'], ['get', 'paved']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww } });
+  map.addLayer({ id: 'ways-dash', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isDrive ? ['get', 'o'] : ['get', 'h'], ['!', ['get', 'paved']]], layout: { 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww, 'line-dasharray': [2.2, 1.1] } });
+  map.addLayer({ id: 'hl-glow', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDrive ? '#f0a050' : '#4fb477', 'line-width': 12, 'line-opacity': 0.35 } });
+  map.addLayer({ id: 'hl-line', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDrive ? '#d9822b' : '#2f7d4f', 'line-width': 5 } });
   map.addLayer({ id: 'route-case', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fff', 'line-width': 9 } });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#7c4dff', 'line-width': 5 } });
   map.addLayer({ id: 'navdone-line', type: 'line', source: 'navdone', layout: { 'line-cap': 'round' }, paint: { 'line-color': '#9e9e9e', 'line-width': 5 } });
@@ -189,14 +208,15 @@ function refreshOverlays() {
 function setMode(m) {
   S.mode = m; saveSettings(); document.body.dataset.mode = m;
   $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
-  st.filters.activity = m === 'gx' ? 'offroad' : 'all'; st.filters.diff = -1;
+  st.filters.activity = m === 'drive' ? 'offroad' : 'all'; st.filters.diff = -1;
   if (map.getLayer('ways-line')) { // restyle trail overlay
     for (const id of ['ways-faint', 'ways-case', 'ways-line', 'ways-dash', 'hl-glow', 'hl-line']) map.removeLayer(id);
     for (const id of ['route-case', 'route-line', 'navdone-line', 'track-line', 'plan-pts', 'pois-sym', 'wpts-sym', 'areas-line']) map.removeLayer(id);
     addOverlays();
   }
   if (st.view?.name === 'explore') renderExplore();
-  toast(m === 'gx' ? 'GX Offroad: tracks & unpaved roads highlighted' : 'Hike: footpaths & trails highlighted', 1800);
+  updateVehiclePill();
+  toast(m === 'drive' ? 'Drive: tracks, dirt & unpaved roads highlighted' : 'Hike: footpaths & trails highlighted', 1800);
 }
 function highlight(t) {
   st.selected = t;
@@ -236,14 +256,15 @@ function showPoi(p) {
 function showWay(w) {
   const t = w.tags, c = G.pointAlong(w.coords, w.len / 2);
   const kind = t.highway === 'track' ? 'Track' + (t.tracktype ? ` (${t.tracktype.replace('grade', 'grade ')})` : '') : t.highway[0].toUpperCase() + t.highway.slice(1);
-  new maplibregl.Popup({ closeButton: false }).setLngLat(c).setHTML(`<b>${esc(t.name || 'Unnamed ' + kind.toLowerCase())}</b><div class="sub">${esc(kind)} · ${G.fmtDist(w.len, true)}${t.surface ? ' · ' + esc(t.surface.replace(/_/g, ' ')) : ''}</div><div class="sub">${S.mode === 'gx' ? '<span class="diff d' + w.do + '">' + DIFF_LABEL[w.do] + '</span>' + (t['4wd_only'] === 'yes' ? ' · 4WD only' : '') : '<span class="diff d' + w.dh + '">' + DIFF_LABEL[w.dh] + '</span>'}</div>`).addTo(map);
+  new maplibregl.Popup({ closeButton: false }).setLngLat(c).setHTML(`<b>${esc(t.name || 'Unnamed ' + kind.toLowerCase())}</b><div class="sub">${esc(kind)} · ${G.fmtDist(w.len, true)}${t.surface ? ' · ' + esc(t.surface.replace(/_/g, ' ')) : ''}</div><div class="sub">${S.mode === 'drive' ? '<span class="diff d' + w.do + '">' + DIFF_LABEL[w.do] + '</span>' + (t['4wd_only'] === 'yes' ? ' · 4WD only' : '') : '<span class="diff d' + w.dh + '">' + DIFF_LABEL[w.dh] + '</span>'}</div>`).addTo(map);
 }
 
 // ---------------- chrome ----------------
 function wireChrome() {
   $$('#modeSeg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+  $('#vehiclePill').onclick = () => editVehicle();
   $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === S.mode));
-  $$('#tabbar button').forEach(b => b.onclick = () => { if (st.plan && b.dataset.tab !== 'saved') endPlan(); st.viewStack = []; show(b.dataset.tab === 'more' ? 'more' : b.dataset.tab, {}, false); if (sheet.get() === 'peek' && b.dataset.tab !== 'explore') sheet.set('half'); });
+  $$('#tabbar button').forEach(b => b.onclick = () => { if (st.plan && b.dataset.tab !== 'saved') endPlan(); st.viewStack = []; show(b.dataset.tab, {}, false); if (sheet.get() === 'peek' && b.dataset.tab !== 'explore') sheet.set('half'); });
   $('#searchForm').onsubmit = e => { e.preventDefault(); $('#q').blur(); doSearch($('#q').value.trim()); };
   $('#q').addEventListener('input', () => { if (!$('#q').value) { st.query = ''; st.places = []; if (st.view?.name === 'explore') renderExplore(); } });
   $('#q').addEventListener('focus', () => { if (st.view?.name !== 'explore') show('explore', {}, false); });
@@ -274,7 +295,7 @@ function filteredTrails() {
   let list = [...st.data.trails.values()].filter(t => {
     if (q) { if (!t.name.toLowerCase().includes(q)) return false; }
     else if (!G.bboxIntersects(t.bbox, vb)) return false;
-    if (S.mode === 'gx' ? !t.activities.offroad : !(t.activities.hike || t.activities.walk || t.activities.bike || t.activities.run)) return false;
+    if (S.mode === 'drive' ? !t.activities.offroad : !(t.activities.hike || t.activities.walk || t.activities.bike || t.activities.run)) return false;
     if (f.activity !== 'all' && !t.activities[f.activity]) return false;
     const d = difficultyFor(t, S.mode, f.activity === 'all' ? null : f.activity);
     if (f.diff >= 0 && d !== f.diff) return false;
@@ -283,6 +304,7 @@ function filteredTrails() {
     if (f.dog && t.dog === 'no') return false; if (f.kid && !t.kid) return false; if (f.stroller && !t.stroller) return false;
     if (f.wheelchair && !(t.wheelchair === 'yes' || t.wheelchair === 'likely')) return false;
     if (f.fourwd && !t.fourwd && t.diffOff < 2) return false;
+    if (f.fits && st.vehicle && !fitsVehicle(t)) return false;
     return true;
   });
   for (const t of list) { t._d = G.hav(c, t.start || t.center); }
@@ -291,20 +313,21 @@ function filteredTrails() {
 }
 const chip = (label, on, attrs) => `<button class="chip${on ? ' on' : ''}" ${attrs}>${label}</button>`;
 function renderExplore() {
-  const f = st.filters, gx = S.mode === 'gx';
-  const acts = gx ? [] : [['all', 'All'], ['hike', '🥾 Hike'], ['walk', '🚶 Walk'], ['run', '🏃 Run'], ['bike', '🚲 Bike']];
+  const f = st.filters, drv = S.mode === 'drive';
+  const acts = drv ? [] : [['all', 'All'], ['hike', '🥾 Hike'], ['walk', '🚶 Walk'], ['run', '🏃 Run'], ['bike', '🚲 Bike']];
   paint(`
-    <div class="peek-row" style="margin-bottom:8px"><div><div style="font-weight:700;font-size:20px;letter-spacing:-.02em" id="exTitle">${gx ? 'Offroad trails' : 'Trails'} nearby</div><div class="sub" id="exSub"></div></div>
+    <div class="peek-row" style="margin-bottom:8px"><div><div style="font-weight:700;font-size:20px;letter-spacing:-.02em" id="exTitle">${drv ? 'Drive routes' : 'Trails'} nearby</div>${drv ? `<div class="sub drive-sub">${st.vehicle ? '🚙 Driving: ' + esc(vehicleName(st.vehicle)) : '<a href="#" id="exAddVeh">Add your vehicle</a> to flag routes that need 4WD'}</div>` : ''}<div class="sub" id="exSub"></div></div>
       <button class="btn" id="btnArea" style="height:36px;font-size:14px;padding:0 12px">${st.loading ? 'Loading…' : '↻ Search area'}</button></div>
-    <div class="chips">${acts.map(([k, l]) => chip(l, f.activity === k, `data-act="${k}"`)).join('')}
+    <div class="chips">${drv ? (st.vehicle ? chip('✓ Fits my vehicle', f.fits, 'data-flag="fits"') : '') + chip('⛰️ 4WD / hard', f.fourwd, 'data-flag="fourwd"') : ''}${acts.map(([k, l]) => chip(l, f.activity === k, `data-act="${k}"`)).join('')}
       ${[[-1, 'Any difficulty'], [0, 'Easy'], [1, 'Moderate'], [2, 'Hard']].map(([k, l]) => chip(l, f.diff === k, `data-diff="${k}"`)).join('')}</div>
     <div class="chips">${[['any', 'Any length'], ['s', '< 2 mi'], ['m', '2–5 mi'], ['l', '5–10 mi'], ['xl', '10+ mi']].map(([k, l]) => chip(G.units.imperial ? l : l.replace('2 mi', '3 km').replace('2–5 mi', '3–8 km').replace('5–10 mi', '8–16 km').replace('10+ mi', '16+ km'), f.len === k, `data-len="${k}"`)).join('')}
-      ${gx ? chip('⛰️ 4WD / hard', f.fourwd, 'data-flag="fourwd"') : [['dog', '🐕 Dogs OK'], ['kid', '🧒 Kid-friendly'], ['stroller', '👶 Stroller'], ['wheelchair', '♿️ Wheelchair']].map(([k, l]) => chip(l, f[k], `data-flag="${k}"`)).join('')}</div>
-    <div class="legend">${gx ? '<span><i style="background:#2e9b57"></i>Easy</span><span><i style="background:#e8a317"></i>Moderate</span><span><i style="background:#d64545"></i>Hard / 4WD</span>' : `<span><i style="background:#2e9b57"></i>Easy</span><span><i style="background:${COLORS().mod}"></i>Moderate</span><span><i style="background:${COLORS().hard}"></i>Hard</span>`}<span>dashed = unpaved</span></div>
+      ${drv ? '' : [['dog', '🐕 Dogs OK'], ['kid', '🧒 Kid-friendly'], ['stroller', '👶 Stroller'], ['wheelchair', '♿️ Wheelchair']].map(([k, l]) => chip(l, f[k], `data-flag="${k}"`)).join('')}</div>
+    <div class="legend">${drv ? '<span><i style="background:#2e9b57"></i>Easy</span><span><i style="background:#e8a317"></i>Moderate</span><span><i style="background:#d64545"></i>Hard / 4WD</span>' : `<span><i style="background:#2e9b57"></i>Easy</span><span><i style="background:${COLORS().mod}"></i>Moderate</span><span><i style="background:${COLORS().hard}"></i>Hard</span>`}<span>dashed = unpaved</span></div>
     <div id="places"></div>
     <div class="list" id="trailList"></div>
     <p class="muted" style="margin-top:18px">Trail data © OpenStreetMap contributors. Conditions change — check local rules, closures, and land ownership before you go. Offroad: stay on legal routes.</p>`);
   $('#btnArea').onclick = () => loadVisibleTrails();
+  const av = $('#exAddVeh'); if (av) av.onclick = e => { e.preventDefault(); editVehicle(); };
   $$('[data-act]').forEach(b => b.onclick = () => { f.activity = b.dataset.act; renderExplore(); });
   $$('[data-diff]').forEach(b => b.onclick = () => { f.diff = +b.dataset.diff; renderExplore(); });
   $$('[data-len]').forEach(b => b.onclick = () => { f.len = b.dataset.len; renderExplore(); });
@@ -320,9 +343,9 @@ function renderPlaces() {
 function trailCard(t) {
   const d = difficultyFor(t, S.mode, st.filters.activity === 'all' ? null : st.filters.activity);
   const fav = st.favorites.has(t.id);
-  const act = t.activities.offroad && S.mode === 'gx' ? '🚙' : t.activities.hike ? '🥾' : t.activities.bike ? '🚲' : '🚶';
+  const act = t.activities.offroad && S.mode === 'drive' ? '🚙' : t.activities.hike ? '🥾' : t.activities.bike ? '🚲' : '🚶';
   return `<button class="card" data-trail="${esc(t.id)}"><div class="thumb">${act}</div><div class="body"><div class="title">${fav ? '♥︎ ' : ''}${esc(t.name)}</div>
-   <div class="meta"><span class="diff d${d}">${DIFF_LABEL[d]}</span><i class="dot"></i><span>${G.fmtDist(t.len)}</span>${t._d != null ? `<i class="dot"></i><span>${G.fmtDist(t._d)} away</span>` : ''}</div></div>${ICON.chev}</button>`;
+   <div class="meta"><span class="diff d${d}">${DIFF_LABEL[d]}</span><i class="dot"></i><span>${G.fmtDist(t.len)}</span>${S.mode === 'drive' && t.fourwd ? '<i class="dot"></i><span class="tag4">4WD</span>' : ''}${S.mode === 'drive' && st.vehicle && !fitsVehicle(t) ? '<i class="dot"></i><span class="tagwarn">⚠︎ Check vehicle</span>' : ''}${t._d != null ? `<i class="dot"></i><span>${G.fmtDist(t._d)} away</span>` : ''}</div></div>${ICON.chev}</button>`;
 }
 function renderList() {
   const el = $('#trailList'); if (!el) return;
@@ -330,7 +353,7 @@ function renderList() {
   const sub = $('#exSub');
   if (sub) sub.textContent = st.query ? `${list.length} matching “${st.query}”` : `${list.length} in view${navigator.onLine ? '' : ' · offline'}`;
   if (!list.length) {
-    el.innerHTML = `<div class="empty"><div class="big">${S.mode === 'gx' ? '🚙' : '🥾'}</div>${st.data.trails.size ? 'No trails match here. Try zooming out, moving the map, or clearing filters.' : navigator.onLine ? 'Tap <b>Search area</b> to load trails for the map view.' : 'No saved trail data here yet. Save areas from the <b>Offline</b> tab while you have signal.'}</div>`;
+    el.innerHTML = `<div class="empty"><div class="big">${S.mode === 'drive' ? '🚙' : '🥾'}</div>${st.data.trails.size ? 'No trails match here. Try zooming out, moving the map, or clearing filters.' : navigator.onLine ? 'Tap <b>Search area</b> to load trails for the map view.' : 'No saved trail data here yet. Save areas from the <b>Offline</b> tab while you have signal.'}</div>`;
     return;
   }
   el.innerHTML = list.slice(0, 60).map(trailCard).join('') + (list.length > 60 ? `<p class="muted">Showing 60 of ${list.length}. Zoom in or filter to narrow down.</p>` : '');
@@ -368,9 +391,9 @@ const CONDITIONS = ['Dry', 'Muddy', 'Wet', 'Snow', 'Icy', 'Flooded', 'Overgrown'
 function renderTrail({ id }) {
   const t = trailById(id); if (!t) return show('explore', {}, false);
   highlight(t);
-  const act = st.filters.activity === 'all' ? (S.mode === 'gx' ? 'offroad' : 'hike') : st.filters.activity;
-  const d = difficultyFor(t, S.mode, S.mode === 'gx' ? 'offroad' : null), fav = st.favorites.has(t.id);
-  const acts = Object.entries(t.activities).filter(([, v]) => v).map(([k]) => ({ hike: '🥾 Hike', walk: '🚶 Walk', run: '🏃 Run', bike: '🚲 Bike', offroad: '🚙 Offroad' }[k]));
+  const act = st.filters.activity === 'all' ? (S.mode === 'drive' ? 'offroad' : 'hike') : st.filters.activity;
+  const d = difficultyFor(t, S.mode, S.mode === 'drive' ? 'offroad' : null), fav = st.favorites.has(t.id);
+  const acts = Object.entries(t.activities).filter(([, v]) => v).map(([k]) => ({ hike: '🥾 Hike', walk: '🚶 Walk', run: '🏃 Run', bike: '🚲 Bike', offroad: '🚙 Drive' }[k]));
   const surf = Object.entries(t.surface).sort((a, b) => b[1] - a[1]);
   const SC = { asphalt: '#6b6b70', paved: '#6b6b70', concrete: '#8e8e93', gravel: '#b59a6b', fine_gravel: '#c8b08a', compacted: '#a7926d', dirt: '#8a6a45', ground: '#8a6a45', grass: '#7fb069', sand: '#e0c68a', unknown: '#c7c7cc', wood: '#a0522d' };
   const segs = trailSegs(t);
@@ -389,7 +412,7 @@ function renderTrail({ id }) {
     <div class="badges">${acts.map(a => `<span class="badge good">${a}</span>`).join('')}
       ${dogTxt ? `<span class="badge${t.dog === 'no' ? ' warn' : ''}">${dogTxt}</span>` : ''}${t.kid ? '<span class="badge good">🧒 Kid-friendly</span>' : ''}${t.stroller ? '<span class="badge good">👶 Stroller-friendly</span>' : ''}
       ${t.wheelchair === 'yes' ? '<span class="badge good">♿️ Wheelchair accessible</span>' : t.wheelchair === 'likely' ? '<span class="badge">♿️ Likely accessible (paved)</span>' : ''}
-      ${t.lit ? '<span class="badge">💡 Lit</span>' : ''}${t.fourwd ? '<span class="badge warn">⛰️ 4WD only</span>' : ''}${t.seasonal ? `<span class="badge warn">Seasonal: ${esc(t.seasonal)}</span>` : ''}</div>
+      ${t.lit ? '<span class="badge">💡 Lit</span>' : ''}${t.fourwd ? '<span class="badge warn">⛰️ 4WD only</span>' : ''}${S.mode === 'drive' && st.vehicle ? (fitsVehicle(t) ? `<span class="badge">✓ Suits your ${esc(st.vehicle.nickname || st.vehicle.model || 'vehicle')}</span>` : `<span class="badge warn">⚠︎ ${t.fourwd ? 'Needs 4WD' : 'Rough — high clearance or 4WD advised'}</span>`) : ''}${t.seasonal ? `<span class="badge warn">Seasonal: ${esc(t.seasonal)}</span>` : ''}</div>
     <h3>Surface</h3><div class="surfbar">${surf.map(([k, v]) => `<i style="width:${(v / t.len * 100).toFixed(1)}%;background:${SC[k] || '#aaa'}"></i>`).join('')}</div>
     <div class="legend">${surf.slice(0, 5).map(([k, v]) => `<span><i style="background:${SC[k] || '#aaa'}"></i>${esc(k.replace(/_/g, ' '))} ${Math.round(v / t.len * 100)}%</span>`).join('')}</div>
     ${pois.length ? `<h3>Along the trail</h3><div class="list">${pois.slice(0, 12).map(p => `<button class="card" data-poi="${p.id}"><div class="thumb">${POI_EMOJI[p.kind]}</div><div class="body"><div class="title">${esc(p.name || POI_LABEL[p.kind])}</div><div class="meta">${POI_LABEL[p.kind]}${p.ele ? ' · ' + G.fmtElev(p.ele) : ''}</div></div></button>`).join('')}</div>` : ''}
@@ -400,7 +423,7 @@ function renderTrail({ id }) {
     <div class="row"><button class="btn" id="tDl">${ICON.dl} Save offline</button><button class="btn" id="tPlan">${ICON.route} Plan from here</button></div>
     <h3>Details</h3>
     <dl class="kv">${t.operator ? `<dt>Managed by</dt><dd>${esc(t.operator)}</dd>` : ''}${t.access ? `<dt>Access</dt><dd>${esc(t.access)}</dd>` : ''}
-      <dt>Difficulty</dt><dd>${S.mode === 'gx' ? 'Offroad: ' + DIFF_LABEL[t.diffOff] : 'Hiking: ' + DIFF_LABEL[t.diffHike]}</dd>
+      <dt>Difficulty</dt><dd>${S.mode === 'drive' ? 'Offroad: ' + DIFF_LABEL[t.diffOff] : 'Hiking: ' + DIFF_LABEL[t.diffHike]}</dd>
       <dt>Trailhead</dt><dd>${t.start[1].toFixed(5)}, ${t.start[0].toFixed(5)}</dd>
       ${t.website ? `<dt>Website</dt><dd><a href="${esc(t.website)}" target="_blank" rel="noopener">Open</a></dd>` : ''}</dl>
     ${t.description ? `<p class="sub">${esc(t.description)}</p>` : ''}
@@ -539,7 +562,7 @@ async function snapshotCard(bbox, title, stats) {
   x.fillStyle = isDark() ? '#f2f2f4' : '#1c1c1e'; x.font = '700 56px -apple-system, system-ui, sans-serif'; x.fillText(title.slice(0, 30), 50, 1135);
   x.font = '600 34px -apple-system, system-ui, sans-serif';
   stats.forEach(([k, v], i) => { x.fillStyle = isDark() ? '#a1a1a8' : '#6b6b70'; x.fillText(k.toUpperCase(), 50 + i * 330, 1210); x.fillStyle = isDark() ? '#f2f2f4' : '#1c1c1e'; x.font = '700 44px -apple-system, system-ui, sans-serif'; x.fillText(v, 50 + i * 330, 1265); x.font = '600 34px -apple-system, system-ui, sans-serif'; });
-  x.fillStyle = S.mode === 'gx' ? '#d9822b' : '#2f7d4f'; x.font = '700 30px -apple-system, system-ui, sans-serif'; x.fillText('✦ Lodestar', W - 230, 1320);
+  x.fillStyle = S.mode === 'drive' ? '#d9822b' : '#2f7d4f'; x.font = '700 30px -apple-system, system-ui, sans-serif'; x.fillText('✦ Lodestar', W - 230, 1320);
   x.fillStyle = '#8e8e93'; x.font = '22px -apple-system, system-ui, sans-serif'; x.fillText('Map data © OpenStreetMap contributors', 50, 1320);
   map.jumpTo(prev);
   const blob = await new Promise(r => c.toBlob(r, 'image/png'));
@@ -602,11 +625,11 @@ function speak(text) {
 const buzz = p => { try { navigator.vibrate?.(p); } catch { } };
 
 // ---------------- recording ----------------
-const ACTS = { hike: '🥾 Hike', walk: '🚶 Walk', run: '🏃 Run', bike: '🚲 Bike', offroad: '🚙 Offroad' };
+const ACTS = { hike: '🥾 Hike', walk: '🚶 Walk', run: '🏃 Run', bike: '🚲 Bike', offroad: '🚙 Drive' };
 function renderRecord() {
   const r = st.rec;
   if (!r) {
-    const def = S.mode === 'gx' ? 'offroad' : 'hike'; st._recAct = st._recAct || def;
+    const def = S.mode === 'drive' ? 'offroad' : 'hike'; st._recAct = st._recAct || def;
     const n = Object.keys(ACTS).length, i = Object.keys(ACTS).indexOf(st._recAct);
     paint(`${hdr('Record')}
       <p class="sub">Tracks distance, time, speed and elevation using GPS — works with no cell signal. Keep Lodestar open on screen while recording.</p>
@@ -729,13 +752,13 @@ async function startNav(route, opts = {}) {
   fitTo(G.bboxOf(coords));
   show('nav', {}, false); sheet.set('peek');
   const recToo = opts.record ?? !st.rec;
-  if (recToo && !st.rec) startRecording(route.activity || (S.mode === 'gx' ? 'offroad' : 'hike'), true);
+  if (recToo && !st.rec) startRecording(route.activity || (S.mode === 'drive' ? 'offroad' : 'hike'), true);
   renderBanner(); speak(st.nav.cues[0]?.text || 'Route started');
   if (st.pos) navUpdate(st.pos);
 }
 function navUpdate(pos) {
   const n = st.nav; if (!n) return;
-  const c = n.route.coords, near = G.nearestOnLine(pos, c), thr = S.mode === 'gx' ? Math.max(S.offRoute, 60) : S.offRoute;
+  const c = n.route.coords, near = G.nearestOnLine(pos, c), thr = S.mode === 'drive' ? Math.max(S.offRoute, 60) : S.offRoute;
   n.dist = near.dist; n.along = Math.max(near.along, n.along - 30); n.remain = Math.max(0, n.route.len - near.along); n.toNear = near.point;
   if (near.dist > thr + (st.posAcc > 30 ? st.posAcc / 2 : 0)) { n.off++; } else { if (n.offAlerted) { speak('Back on route'); toast('Back on route ✓'); } n.off = 0; n.offAlerted = false; }
   if (n.off >= 3 && !n.offAlerted) { n.offAlerted = true; buzz([300, 120, 300]); speak(`Off route. The trail is ${G.fmtShortDist(near.dist)} to the ${compassWord(G.bearing(pos, near.point))}`); }
@@ -769,13 +792,13 @@ function renderNav() {
     <h3>Turn cues</h3><div class="list cue-list">${n.cues.map(q => `<div class="card"><div class="thumb" style="width:36px;height:36px;font-size:18px">${ARROW[q.type] || '•'}</div><div class="body"><div class="title" style="font-size:14.5px">${esc(q.text)}</div><div class="meta">at ${G.fmtDist(q.at, true)}</div></div></div>`).join('')}</div>`);
   $('#nvEnd').onclick = endNav;
   $('#nvRev').onclick = () => { const r = st.nav.route; startNav({ ...r, coords: r.coords.slice().reverse() }, { keepDir: true, record: false }); };
-  $('#nvRec').onclick = () => { if (!st.rec) { startRecording(S.mode === 'gx' ? 'offroad' : 'hike'); renderNav(); } else show('record', {}, true); };
+  $('#nvRec').onclick = () => { if (!st.rec) { startRecording(S.mode === 'drive' ? 'offroad' : 'hike'); renderNav(); } else show('record', {}, true); };
   $('#nvVoice').onclick = () => { S.voice = !S.voice; saveSettings(); renderNav(); };
   updateNavStats();
 }
 function updateNavStats() {
   const n = st.nav; if (!n || !$('#nvR')) return;
-  const rem = n.remain ?? n.route.len, spd = (st.posSpeed > 0.5 ? st.posSpeed : null) || { offroad: 4, bike: 4.5, run: 2.7 }[n.route.activity] || (S.mode === 'gx' ? 4 : 1.25);
+  const rem = n.remain ?? n.route.len, spd = (st.posSpeed > 0.5 ? st.posSpeed : null) || { offroad: 4, bike: 4.5, run: 2.7 }[n.route.activity] || (S.mode === 'drive' ? 4 : 1.25);
   $('#nvR').textContent = G.fmtDist(rem, true); $('#nvD').textContent = Math.round((1 - rem / n.route.len) * 100) + '%';
   $('#nvE').textContent = new Date(Date.now() + rem / spd * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   if (!st.pos) $('#nvSub').textContent = 'Waiting for GPS…'; else if (n.offAlerted) $('#nvSub').textContent = 'Off route'; else $('#nvSub').textContent = `${G.fmtShortDist(n.dist || 0)} from route`;
@@ -793,7 +816,7 @@ function gotoPoint(dest, name) {
 
 // ---------------- waypoints ----------------
 function editWaypoint(w, at) {
-  const isNew = !w; w = w || { id: uid('w'), name: '', icon: S.mode === 'gx' ? 'vehicle' : 'pin', notes: '', lon: +at[0].toFixed(6), lat: +at[1].toFixed(6), created: Date.now(), ele: st.posAlt ?? null };
+  const isNew = !w; w = w || { id: uid('w'), name: '', icon: S.mode === 'drive' ? 'vehicle' : 'pin', notes: '', lon: +at[0].toFixed(6), lat: +at[1].toFixed(6), created: Date.now(), ele: st.posAlt ?? null };
   modal(`<h2>${isNew ? 'New waypoint' : 'Edit waypoint'}</h2><p class="muted">${w.lat.toFixed(5)}, ${w.lon.toFixed(5)}${isNew ? (st.pos && st.locate ? ' · your location' : ' · map center') : ''}</p>
    <div class="field"><span>Icon</span><div class="icons">${Object.entries(WPT_ICONS).map(([k, e]) => `<button data-ic="${k}" class="${k === w.icon ? 'on' : ''}" title="${WPT_LABEL[k]}">${e}</button>`).join('')}</div></div>
    <div class="field"><span>Name</span><input class="input" id="wName" value="${esc(w.name)}" placeholder="${WPT_LABEL[w.icon]}"></div>
@@ -828,13 +851,13 @@ function buildGraph() {
   const nodes = new Map(), coords = [], adj = [];
   const key = c => c[0].toFixed(6) + ',' + c[1].toFixed(6);
   const idx = c => { const k = key(c); let i = nodes.get(k); if (i == null) { i = coords.length; nodes.set(k, i); coords.push(c); adj.push([]); } return i; };
-  const gx = S.mode === 'gx';
+  const drv = S.mode === 'drive';
   for (const w of st.data.ways.values()) {
-    if (gx ? !w.cls.offroad : !(w.cls.hike || w.cls.walk || w.cls.bike)) continue;
+    if (drv ? !w.cls.offroad : !(w.cls.hike || w.cls.walk || w.cls.bike)) continue;
     let prev = idx(w.coords[0]);
     for (let i = 1; i < w.coords.length; i++) { const cur = idx(w.coords[i]), d = G.hav(w.coords[i - 1], w.coords[i]); adj[prev].push([cur, d]); adj[cur].push([prev, d]); prev = cur; }
   }
-  graph = { coords, adj }; graphSig = sig + gx; return graph;
+  graph = { coords, adj }; graphSig = sig + drv; return graph;
 }
 function nearestNode(g, p, maxD = 80) { let bi = -1, bd = maxD; for (let i = 0; i < g.coords.length; i++) { const c = g.coords[i]; if (Math.abs(c[1] - p[1]) > 0.002) continue; const d = G.hav(p, c); if (d < bd) { bd = d; bi = i; } } return bi; }
 function shortest(g, a, b) {
@@ -906,7 +929,7 @@ async function renderSaved(args = {}) {
     $$('[data-trail]', el).forEach(b => b.onclick = () => show('trail', { id: b.dataset.trail }));
   } else if (tab === 'activities') {
     const ts = (await db.all('tracks')).sort((a, b) => b.created - a.created);
-    el.innerHTML = ts.map(activityCard).join('') || `<div class="empty"><div class="big">●</div>Record a hike or a GX run from the <b>Record</b> tab, or import a GPX file.</div>`;
+    el.innerHTML = ts.map(activityCard).join('') || `<div class="empty"><div class="big">●</div>Record a hike or a drive from the <b>Record</b> tab, or import a GPX file.</div>`;
     $$('[data-track]', el).forEach(b => b.onclick = () => show('activity', { id: b.dataset.track }));
   } else if (tab === 'routes') {
     const rs = (await db.all('routes')).sort((a, b) => b.created - a.created);
@@ -1096,16 +1119,156 @@ function layersSheet() {
   });
 }
 
-// ---------------- more / settings ----------------
+// ---------------- account gate ----------------
+const AUTH_BG = `<svg class="auth-mtn" viewBox="0 0 400 160" preserveAspectRatio="none" aria-hidden="true"><path d="M0 160V96l52-40 38 28 62-62 54 52 40-30 70 58 44-30 40 26v62Z" fill="#1E3A66"/><path d="M0 160v-34l70-34 48 26 74-48 66 52 52-26 90 40v24Z" fill="#2A4A7A"/></svg>`;
+// Shows the full-screen sign-in / create-account page. Resolves with the user once signed in.
+function authGate(expired = false) {
+  return new Promise(resolve => {
+    $('#auth')?.remove();
+    const el = document.createElement('div'); el.id = 'auth'; el.className = 'auth'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Sign in to Lodestar');
+    let mode = 'signin';
+    el.innerHTML = `${AUTH_BG}<div class="auth-inner">
+      <img src="icons/icon-192.png" alt="" class="auth-logo" width="76" height="76">
+      <h1>Lodestar</h1><p class="auth-tag">Off-grid trail maps for hikes and drives</p>
+      ${expired ? '<p class="auth-note warn">Your session ended. Sign in again to keep syncing.</p>' : ''}
+      <div class="auth-seg" role="tablist"><button type="button" data-am="signin" class="on">Sign In</button><button type="button" data-am="signup">Create Account</button><i></i></div>
+      <form class="auth-card" id="authForm" novalidate>
+        <label class="af af-name" hidden><span>Name <em>optional</em></span><input id="aName" type="text" autocomplete="name" maxlength="60" placeholder="What should we call you?"></label>
+        <label class="af"><span>Email</span><input id="aEmail" type="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false" required maxlength="254" placeholder="you@example.com"></label>
+        <label class="af"><span>Password</span><div class="pw"><input id="aPass" type="password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="Required"><button type="button" class="pw-eye" id="aEye" aria-label="Show password">Show</button></div></label>
+        <p class="af-hint" id="aHint" hidden>At least 8 characters.</p>
+        <p class="auth-err" id="aErr" role="alert" hidden></p>
+        <button class="auth-btn" id="aGo" type="submit">Sign In</button>
+      </form>
+      <p class="auth-foot">Your favorites, tracks, waypoints, routes and vehicle sync privately to your account. No ads, no tracking.</p>
+      <p class="auth-foot small" id="aOff" ${navigator.onLine ? 'hidden' : ''}>You're offline. Connect once to sign in — after that Lodestar works with no signal.</p>
+    </div>`;
+    document.body.appendChild(el);
+    document.body.classList.add('locked');
+    const setMode = m => {
+      mode = m; const up = m === 'signup';
+      $$('[data-am]', el).forEach(b => b.classList.toggle('on', b.dataset.am === m));
+      el.querySelector('.auth-seg').classList.toggle('right', up);
+      el.querySelector('.af-name').hidden = !up; $('#aHint').hidden = !up; $('#aErr').hidden = true;
+      $('#aPass').autocomplete = up ? 'new-password' : 'current-password'; $('#aPass').placeholder = up ? 'Create a password' : 'Required';
+      $('#aGo').textContent = up ? 'Create Account' : 'Sign In';
+    };
+    el._setMode = setMode;
+    $$('[data-am]', el).forEach(b => b.onclick = () => setMode(b.dataset.am));
+    $('#aEye').onclick = () => { const i = $('#aPass'), show = i.type === 'password'; i.type = show ? 'text' : 'password'; $('#aEye').textContent = show ? 'Hide' : 'Show'; $('#aEye').setAttribute('aria-label', show ? 'Hide password' : 'Show password'); };
+    const onNet = () => { const o = $('#aOff'); if (o) o.hidden = navigator.onLine; };
+    addEventListener('online', onNet); addEventListener('offline', onNet);
+    $('#authForm').onsubmit = async e => {
+      e.preventDefault();
+      const err = $('#aErr'), go = $('#aGo'), email = $('#aEmail').value.trim(), pw = $('#aPass').value, name = $('#aName').value.trim();
+      const fail = m => { err.textContent = m; err.hidden = false; };
+      err.hidden = true;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('Enter a valid email address.');
+      if (pw.length < 8) return fail(mode === 'signup' ? 'Use at least 8 characters for your password.' : 'Enter your password.');
+      if (!navigator.onLine) return fail('You need a connection to sign in the first time.');
+      go.disabled = true; go.textContent = mode === 'signup' ? 'Creating account…' : 'Signing in…';
+      try {
+        const u = mode === 'signup' ? await signUp(email, pw, name) : await signIn(email, pw);
+        $('#aPass').value = '';
+        removeEventListener('online', onNet); removeEventListener('offline', onNet);
+        el.classList.add('leaving'); document.body.classList.remove('locked');
+        setTimeout(() => el.remove(), 350);
+        toast(mode === 'signup' ? `Welcome to Lodestar${u.name ? ', ' + u.name : ''}` : `Signed in as ${u.name || u.email}`);
+        resolve(u);
+      } catch (x) {
+        fail(x.status === 429 ? 'Too many attempts. Please wait a few minutes and try again.' : x.message || 'Something went wrong. Try again.');
+        go.disabled = false; go.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
+      }
+    };
+    setTimeout(() => $('#aEmail')?.focus({ preventScroll: true }), 300);
+  });
+}
+async function reauth(prevId) {
+  const u = await authGate(true);
+  if (prevId && u.id !== prevId) return location.reload();
+  await reloadUserData(); syncNow();
+}
+
+// ---------------- vehicle ----------------
+const vehicleName = v => v ? [v.year, v.make, v.model].filter(Boolean).join(' ') || v.nickname || 'My vehicle' : '';
+const vehicleTags = v => v ? [v.fourwd && '4WD', v.awd && 'AWD', v.clearance && 'High clearance'].filter(Boolean) : [];
+// Routes marked 4WD need 4WD; hard offroad routes need 4WD or high clearance.
+function fitsVehicle(t) { const v = st.vehicle; if (!v) return true; if (t.fourwd && !v.fourwd) return false; if (t.diffOff >= 2 && !v.fourwd && !v.clearance) return false; return true; }
+function updateVehiclePill() {
+  const p = $('#vehiclePill'); if (!p) return;
+  p.hidden = S.mode !== 'drive';
+  const v = st.vehicle;
+  p.innerHTML = v ? `<small>Driving</small><b>${esc(vehicleName(v))}</b>` : `<small>Drive mode</small><b>Add your vehicle</b>`;
+  p.setAttribute('aria-label', v ? `Driving: ${vehicleName(v)}. Edit vehicle` : 'Add your vehicle');
+}
+function editVehicle() {
+  const v = st.vehicle || {}, yr = new Date().getFullYear() + 1;
+  modal(`<h2>My Vehicle</h2><p class="sub">Shown in Drive mode and used to flag routes that need 4WD or high clearance. Synced to your account.</p>
+    <div class="group form">
+      <div><label for="vYear">Year</label><input class="input" id="vYear" type="number" inputmode="numeric" min="1950" max="${yr}" placeholder="2021" value="${esc(v.year || '')}"></div>
+      <div><label for="vMake">Make</label><input class="input" id="vMake" maxlength="40" placeholder="e.g. Toyota" value="${esc(v.make || '')}"></div>
+      <div><label for="vModel">Model</label><input class="input" id="vModel" maxlength="40" placeholder="e.g. 4Runner" value="${esc(v.model || '')}"></div>
+      <div><label for="vNick">Nickname <em class="muted">optional</em></label><input class="input" id="vNick" maxlength="40" placeholder="e.g. The Black Rig" value="${esc(v.nickname || '')}"></div>
+    </div>
+    <h3>Capability</h3><div class="group">
+      <div><label>4WD (low range)</label><label class="switch"><input type="checkbox" id="v4" ${v.fourwd ? 'checked' : ''}><i></i></label></div>
+      <div><label>AWD</label><label class="switch"><input type="checkbox" id="vA" ${v.awd ? 'checked' : ''}><i></i></label></div>
+      <div><label>High clearance</label><label class="switch"><input type="checkbox" id="vC" ${v.clearance ? 'checked' : ''}><i></i></label></div>
+    </div>
+    <p class="err-line" id="vErr" hidden></p>
+    <button class="btn primary block" id="vSave" style="margin-top:12px">Save vehicle</button>
+    ${st.vehicle ? '<button class="btn danger block" id="vDel" style="margin-top:8px">Remove vehicle</button>' : ''}
+    <button class="btn block" style="margin-top:8px" data-x>Cancel</button>`, (m, close) => {
+    m.querySelector('[data-x]').onclick = close;
+    m.querySelector('#vSave').onclick = async () => {
+      const year = m.querySelector('#vYear').value.trim(), make = m.querySelector('#vMake').value.trim(), model = m.querySelector('#vModel').value.trim(), nickname = m.querySelector('#vNick').value.trim();
+      const er = m.querySelector('#vErr');
+      if (year && !(+year >= 1950 && +year <= yr)) { er.textContent = `Year should be between 1950 and ${yr}.`; er.hidden = false; return; }
+      if (!make && !model && !nickname) { er.textContent = 'Add at least a make and model (or a nickname).'; er.hidden = false; return; }
+      const veh = { id: 'vehicle', year: year ? +year : null, make, model, nickname, fourwd: m.querySelector('#v4').checked, awd: m.querySelector('#vA').checked, clearance: m.querySelector('#vC').checked };
+      await db.put('profile', veh); st.vehicle = veh; close(); updateVehiclePill();
+      if (st.view && ['explore', 'more', 'trail'].includes(st.view.name)) VIEWS[st.view.name](st.view.args);
+      toast('Vehicle saved');
+    };
+    const d = m.querySelector('#vDel'); if (d) d.onclick = async () => { await db.del('profile', 'vehicle'); st.vehicle = null; st.filters.fits = false; close(); updateVehiclePill(); if (st.view && ['explore', 'more', 'trail'].includes(st.view.name)) VIEWS[st.view.name](st.view.args); toast('Vehicle removed'); };
+  });
+}
+
+// ---------------- profile / settings ----------------
+function syncLine() {
+  if (acct.syncing) return '<span class="sync-dot spin"></span>Syncing…';
+  if (acct.error) return `<span class="sync-dot bad"></span>${esc(acct.error)}`;
+  if (!navigator.onLine) return `<span class="sync-dot off"></span>Offline${acct.pending ? ` · ${acct.pending} change${acct.pending > 1 ? 's' : ''} waiting` : ' · saved on this device'}`;
+  if (acct.pending) return `<span class="sync-dot off"></span>${acct.pending} change${acct.pending > 1 ? 's' : ''} waiting to sync`;
+  return `<span class="sync-dot ok"></span>${acct.lastSync ? 'Synced ' + ago(acct.lastSync) : 'Ready to sync'}`;
+}
+function ago(t) { const s = (Date.now() - t) / 1000; return s < 45 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(t).toLocaleDateString(); }
+function updateSyncUI() { const e = $('#syncLine'); if (e) e.innerHTML = syncLine(); }
 function renderMore() {
-  const themeI = ['auto', 'light', 'dark'].indexOf(S.theme);
-  paint(`${hdr('More')}
+  const themeI = ['auto', 'light', 'dark'].indexOf(S.theme), u = acct.user || {}, v = st.vehicle;
+  const initial = esc((u.name || u.email || '?').trim()[0].toUpperCase());
+  pendingCount().then(updateSyncUI);
+  paint(`${hdr('Profile')}
+    <div class="acct-card">
+      <div class="avatar">${initial}</div>
+      <div class="acct-id"><div class="acct-name">${esc(u.name || 'Lodestar explorer')}</div><div class="acct-mail">${esc(u.email || '')}</div><div class="acct-sync" id="syncLine">${syncLine()}</div></div>
+      <button class="btn" id="pSync" style="height:34px;font-size:13.5px;padding:0 12px">Sync now</button>
+    </div>
+    <h3>My Vehicle</h3><div class="group">
+      <button id="pVeh" class="veh-row"><span class="veh-ico">🚙</span><span class="veh-txt">${v ? `<b>${esc(vehicleName(v))}</b><small>${esc([v.nickname && v.nickname !== vehicleName(v) ? '“' + v.nickname + '”' : '', ...vehicleTags(v)].filter(Boolean).join(' · ') || 'Tap to add capability')}</small>` : '<b>Add your vehicle</b><small>Year, make, model · 4WD / AWD / clearance</small>'}</span>${ICON.chev}</button>
+    </div>
+    <h3>Account</h3><div class="group">
+      <button id="pName"><label>Name</label><span class="muted">${esc(u.name || 'Add')}</span>${ICON.chev}</button>
+      <button id="pPass"><label>Change password</label>${ICON.chev}</button>
+      <button id="pOut"><label class="red">Sign out</label></button>
+    </div>
+    <h3>Settings</h3>
     <div class="group">
       <div><label>Appearance</label><div class="seg seg3 small" style="--n:3;--i:${themeI};width:190px"><button data-th="auto" class="${S.theme === 'auto' ? 'on' : ''}">Auto</button><button data-th="light" class="${S.theme === 'light' ? 'on' : ''}">Light</button><button data-th="dark" class="${S.theme === 'dark' ? 'on' : ''}">Dark</button><i class="seg-thumb"></i></div></div>
       <div><label>Units</label><div class="seg seg3 small" style="--n:2;--i:${S.imperial ? 0 : 1};width:190px"><button data-units="1" class="${S.imperial ? 'on' : ''}">mi / ft</button><button data-units="0" class="${!S.imperial ? 'on' : ''}">km / m</button><i class="seg-thumb"></i></div></div>
       <div><label>Voice cues</label><label class="switch"><input type="checkbox" id="mVoice" ${S.voice ? 'checked' : ''}><i></i></label></div>
       <div><label>Keep screen awake while recording</label><label class="switch"><input type="checkbox" id="mWake" ${S.wake ? 'checked' : ''}><i></i></label></div>
-      <div><label>Off-route alert distance</label><select class="input" id="mOff" style="width:120px;padding:8px 10px">${[30, 45, 75, 120].map(v => `<option value="${v}" ${S.offRoute === v ? 'selected' : ''}>${G.fmtShortDist(v)}</option>`).join('')}</select></div>
+      <div><label>Off-route alert distance</label><select class="input" id="mOff" style="width:120px;padding:8px 10px">${[30, 45, 75, 120].map(x => `<option value="${x}" ${S.offRoute === x ? 'selected' : ''}>${G.fmtShortDist(x)}</option>`).join('')}</select></div>
     </div>
     <h3>App</h3><div class="group">
       <button id="mInstall"><label>Install on iPhone / Home Screen</label>${ICON.chev}</button>
@@ -1114,12 +1277,23 @@ function renderMore() {
       <button id="mRestore"><label>Restore backup</label>${ICON.chev}</button>
       <button id="mUpdate"><label>Check for app update</label>${ICON.chev}</button>
     </div>
-    <h3>Privacy</h3><div class="note">No accounts, no ads, no analytics, no tracking. Your location, tracks, waypoints, notes and photos are stored only on this device. Lodestar talks only to free map/data services to fetch map tiles, trail data (Overpass/OpenStreetMap), terrain, and place search (Nominatim) — and never sends them your recordings.</div>
+    <h3>Privacy</h3><div class="note">Your favorites, tracks, waypoints, planned routes, notes and vehicle are private to your account — nobody else can see or change them. They're cached on this device so Lodestar works with no signal, and erased from the device when you sign out. Photos stay on this device only. No ads, no analytics, no tracking. Map tiles, trail data (OpenStreetMap/Overpass), terrain and place search (Nominatim) come from free public services that never receive your recordings.</div>
     <h3>Map data & credits</h3><p class="muted">Trail & map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL). Vector tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> / OpenMapTiles. Topo & satellite: USGS The National Map (public domain). Terrain: AWS Terrain Tiles (Mapzen; USGS, NASA SRTM and others). OpenTopoMap (CC-BY-SA, online only). Place search: Nominatim. Map engine: MapLibre GL JS.</p>
     <p class="muted">Lodestar is not affiliated with AllTrails or onX. Always carry a backup map, check closures & land ownership, and stay on legal routes.</p>
-    <button class="btn danger block" id="mClear" style="margin-top:8px">Erase all Lodestar data</button>
-    <p class="muted" style="text-align:center;margin-top:14px">✦ Lodestar v1.0 · Made for Nick</p>
+    <button class="btn block" id="mClear" style="margin-top:8px">Delete offline maps from this device</button>
+    <button class="btn danger block" id="pDelete" style="margin-top:8px">Delete account</button>
+    <p class="muted" style="text-align:center;margin-top:14px">✦ Lodestar v1.1</p>
     <input type="file" id="fileBackup" accept="application/json,.json" hidden>`);
+  $('#pSync').onclick = async () => { if (!navigator.onLine) return toast('You\'re offline — changes will sync when you reconnect'); await syncNow(); toast(acct.error || 'Up to date'); };
+  $('#pVeh').onclick = () => editVehicle();
+  $('#pName').onclick = async () => { const n = await promptBox('Your name', u.name || '', 'Name (optional)'); if (n == null) return; try { await updateName(n.trim()); renderMore(); toast('Name updated'); } catch (e) { toast(e.message); } };
+  $('#pPass').onclick = changePasswordBox;
+  $('#pOut').onclick = async () => {
+    if (!(await confirmBox('Sign out?', `Your data stays safe in your account. Lodestar will erase it — and offline maps — from this device.${acct.pending ? ` ${acct.pending} unsynced change${acct.pending > 1 ? 's' : ''} will be lost if you're offline.` : ''}`, 'Sign Out', true))) return;
+    if (st.rec) { toast('Stop recording before signing out'); return; }
+    await signOut(); location.reload();
+  };
+  $('#pDelete').onclick = deleteAccountBox;
   $$("[data-th]").forEach(b => b.onclick = () => { S.theme = b.dataset.th; saveSettings(); restyle(); renderMore(); });
   $$('[data-units]').forEach(b => b.onclick = () => { S.imperial = b.dataset.units === '1'; G.units.imperial = S.imperial; saveSettings(); renderMore(); toast('Units updated'); });
   $('#mVoice').onchange = e => { S.voice = e.target.checked; saveSettings(); };
@@ -1132,15 +1306,45 @@ function renderMore() {
   $('#fileBackup').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const d = JSON.parse(await f.text()); if (d.app !== 'lodestar') throw 0; for (const s of ['tracks', 'waypoints', 'routes', 'favorites', 'notes']) for (const v of d[s] || []) await db.put(s, v); await loadAll(); toast('Backup restored'); } catch { toast('That isn\'t a Lodestar backup'); } };
   $('#mUpdate').onclick = async () => { if (!st.swReg) return toast('Offline support not active'); await st.swReg.update(); toast('Checking… reload the app to use the latest version'); };
   $('#mClear').onclick = async () => {
-    if (!(await confirmBox('Erase everything?', 'Deletes all offline maps, activities, routes, waypoints, notes and photos from this device.', 'Erase', true))) return;
-    for (const s of ['areas', 'areaData', 'tracks', 'waypoints', 'routes', 'favorites', 'notes', 'photos', 'kv']) await db.clear(s);
+    if (!(await confirmBox('Delete offline maps?', 'Removes saved map areas and cached tiles from this device. Your account data is not affected.', 'Delete', true))) return;
+    for (const a of await db.all('areas')) await deleteArea(a.id).catch(() => { });
+    await db.clear('areas'); await db.clear('areaData');
     for (const k of await caches.keys()) if (!k.startsWith('ls-shell')) await caches.delete(k);
-    location.reload();
+    st.areas = []; rebuildData([]); refreshOverlays(); toast('Offline maps deleted');
   };
+}
+function changePasswordBox() {
+  modal(`<h2>Change password</h2><p class="sub">You'll stay signed in here; other devices will be signed out.</p>
+    <div class="group form">
+      <div><label for="cpOld">Current</label><input class="input" id="cpOld" type="password" autocomplete="current-password" maxlength="128"></div>
+      <div><label for="cpNew">New</label><input class="input" id="cpNew" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="8+ characters"></div>
+    </div><p class="err-line" id="cpErr" hidden></p>
+    <button class="btn primary block" id="cpGo" style="margin-top:12px">Update password</button><button class="btn block" style="margin-top:8px" data-x>Cancel</button>`, (m, close) => {
+    m.querySelector('[data-x]').onclick = close;
+    m.querySelector('#cpGo').onclick = async () => {
+      const o = m.querySelector('#cpOld').value, n = m.querySelector('#cpNew').value, er = m.querySelector('#cpErr');
+      if (n.length < 8) { er.textContent = 'New password needs at least 8 characters.'; er.hidden = false; return; }
+      if (!navigator.onLine) { er.textContent = 'You need a connection to change your password.'; er.hidden = false; return; }
+      try { await changePassword(o, n); close(); toast('Password updated'); } catch (e) { er.textContent = e.message; er.hidden = false; }
+    };
+  });
+}
+function deleteAccountBox() {
+  modal(`<h2>Delete account?</h2><p class="sub">This permanently deletes your Lodestar account and everything synced to it — favorites, tracks, waypoints, routes, notes and vehicle — and erases this device's copy. This can't be undone.</p>
+    <div class="group form"><div><label for="daPw">Password</label><input class="input" id="daPw" type="password" autocomplete="current-password" maxlength="128"></div></div>
+    <p class="err-line" id="daErr" hidden></p>
+    <button class="btn danger block" id="daGo" style="margin-top:12px">Delete account permanently</button><button class="btn block" style="margin-top:8px" data-x>Cancel</button>`, (m, close) => {
+    m.querySelector('[data-x]').onclick = close;
+    m.querySelector('#daGo').onclick = async () => {
+      const er = m.querySelector('#daErr');
+      if (!navigator.onLine) { er.textContent = 'You need a connection to delete your account.'; er.hidden = false; return; }
+      try { await deleteAccount(m.querySelector('#daPw').value); location.reload(); } catch (e) { er.textContent = e.message; er.hidden = false; }
+    };
+  });
 }
 
 const VIEWS = { explore: renderExplore, trail: renderTrail, record: renderRecord, saved: renderSaved, activity: renderActivity, route: renderRoute, waypoint: renderWaypoint, plan: renderPlan, offline: renderOffline, newArea: renderNewArea, more: renderMore, nav: renderNav };
 window.addEventListener('error', e => console.error('Lodestar error:', e.message));
 boot();
 // expose for debugging/tests
-window.__lodestar = { st, S, get map() { return map; }, get sheet() { return sheet; }, db, G };
+window.__lodestar = { st, S, acct, get map() { return map; }, get sheet() { return sheet; }, db, G };
