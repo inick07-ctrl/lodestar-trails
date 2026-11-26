@@ -1,5 +1,5 @@
 // Lodestar service worker: offline app shell + offline map tiles. No analytics, no tracking.
-const VERSION = 'ls-shell-v2';
+const VERSION = 'ls-shell-v3';
 const TILE_CACHE = 'ls-tiles-v1';
 const RUNTIME = 'ls-runtime-v1';
 const RUNTIME_MAX = 3000;

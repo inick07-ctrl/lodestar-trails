@@ -4,16 +4,25 @@
       <stop offset="0" stop-color="#0B1A33"/>
       <stop offset="1" stop-color="#13284D"/>
     </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="48%" r="42%">
-      <stop offset="0" stop-color="#2A4C7A" stop-opacity=".45"/>
+    <radialGradient id="glow" cx="50%" cy="38%" r="40%">
+      <stop offset="0" stop-color="#2A4C7A" stop-opacity=".4"/>
       <stop offset="1" stop-color="#0B1A33" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="star" x1="256" y1="106" x2="256" y2="406" gradientUnits="userSpaceOnUse">
+    <linearGradient id="star" x1="256" y1="86" x2="256" y2="338" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#F8FAFC"/>
       <stop offset="1" stop-color="#D7DEE8"/>
     </linearGradient>
+    <clipPath id="r"><rect width="512" height="512" rx="114"/></clipPath>
   </defs>
   <rect width="512" height="512" rx="114" fill="url(#bg)"/>
-  <rect width="512" height="512" rx="114" fill="url(#glow)"/>
-  <path fill="url(#star)" d="M256 106 L279.33 232.67 L406 256 L279.33 279.33 L256 406 L232.67 279.33 L106 256 L232.67 232.67 Z"/>
+  <g clip-path="url(#r)">
+    <rect width="512" height="512" fill="url(#glow)"/>
+    <!-- Distant range -->
+    <path fill="#1E3A66" d="M0 512 L0 438 L95 390 L175 428 L310 360 L405 408 L512 392 L512 512 Z"/>
+    <!-- Near range -->
+    <path fill="#2A4A7A" d="M0 512 L0 458 L88 412 L165 442 L256 372 L348 438 L440 402 L512 438 L512 512 Z"/>
+    <!-- Faint snowcap on the main peak -->
+    <path fill="#D7DEE8" fill-opacity=".38" d="M256 372 L227 394 L256 386 L273 384 Z"/>
+    <path fill="url(#star)" d="M256 86 L276.51 191.49 L382 212 L276.51 232.51 L256 338 L235.49 232.51 L130 212 L235.49 191.49 Z"/>
+  </g>
 </svg>
