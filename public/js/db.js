@@ -1,6 +1,6 @@
 // Tiny IndexedDB wrapper. Local cache for the signed-in user; synced stores are queued for the server.
-const NAME = 'lodestar', VER = 2;
-const STORES = ['areas', 'areaData', 'tracks', 'waypoints', 'routes', 'favorites', 'notes', 'photos', 'kv', 'outbox', 'profile'];
+const NAME = 'lodestar', VER = 3;
+const STORES = ['areas', 'areaData', 'tracks', 'waypoints', 'routes', 'favorites', 'notes', 'photos', 'kv', 'outbox', 'profile', 'ctrails'];
 export const SYNC_STORES = new Set(['favorites', 'tracks', 'waypoints', 'routes', 'notes', 'profile']);
 let dbp;
 function open() {

@@ -4,7 +4,7 @@ import { db, SYNC_STORES, onLocalChange } from './db.js';
 export const acct = { user: null, syncing: false, lastSync: 0, pending: 0, error: '', listeners: new Set() };
 const emit = () => acct.listeners.forEach(f => { try { f(acct); } catch { } });
 
-async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body } = {}) {
   const r = await fetch('/api/' + path, {
     method, credentials: 'same-origin', cache: 'no-store',
     headers: body ? { 'Content-Type': 'application/json', 'X-Lodestar': '1' } : {},

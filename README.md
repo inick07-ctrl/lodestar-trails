@@ -27,6 +27,15 @@ Tests (Playwright + Chrome): `node tests/test-e2e.mjs online`, then stop the ser
 
 When you change app files, bump `VERSION` in `public/sw.js` so installed copies update.
 
+## Community trails
+- **Create a trail**: Explore › *Create trail* (draw by tapping the map, optional snap-to-paths) or turn any GPS recording into a trail (Record tab or an activity's *Create a trail from this recording*).
+- Name, *best for* (Hiking, Biking, Off-road 4WD, Overlanding, ATV/UTV, Horseback, Snowmobile, Trail running, Walking), difficulty, notes, and a vehicle requirement used by Drive mode's *Fits my vehicle*.
+- **Private** (only you) or **Shared with the Lodestar community** (every signed-in user). Authors are shown by display name only.
+- Only the creator can edit or delete a trail (enforced server-side). Others can follow, save to favorites (kept offline), export GPX, or **Report** it.
+- API: `POST /api/trails` (`list`, `get`, `mine`, `create`, `update`, `delete`, `report`). Schema: `db/migrations/003_community_trails.sql` (applied automatically). Deleting an account deletes its trails.
+- Moderation (no admin UI yet): reports are stored in `trail_reports`; a trail with 5+ distinct reports is hidden from other users automatically. See the SQL note in the migration file.
+- Tests: `node tests/test-trails.mjs` (API) and `node tests/test-trails-ui.mjs` (UI + screenshots) against `tests/dev-server.mjs`.
+
 ## Data & credits
 Map data © OpenStreetMap contributors (ODbL). Vector tiles: OpenFreeMap / OpenMapTiles. USGS The National Map (public domain). AWS Terrain Tiles. OpenTopoMap (CC-BY-SA). Nominatim search. MapLibre GL JS (BSD-3).
 Not affiliated with AllTrails or onX.

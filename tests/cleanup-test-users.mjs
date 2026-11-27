@@ -14,13 +14,16 @@ if (!process.env.DATABASE_URL) { console.error('DATABASE_URL is not set'); proce
 const { neon } = await import('@neondatabase/serverless');
 const q = neon(process.env.DATABASE_URL);
 const users = await q`select id from users where email like 'lodestar-e2e-%@example.com' or email like 'lodestar-test-%@example.com'`;
-if (users.length) await q`delete from users where id = any(${users.map(u => u.id)})`;
+const ids = users.map(u => u.id);
+if (users.length) await q`delete from users where id = any(${ids})`; // sessions, items, community_trails, trail_reports cascade
+const ctRates = ids.length ? await q`delete from rate_limits where key like 'ct:%' and split_part(key, ':', 3) = any(${ids}) returning key` : [];
 const rates = await q`delete from rate_limits where key like '%lodestar-e2e%' or key like '%lodestar-test%'
   or key like 'recover:%' or key like 'signup:ip:%' or key like 'login:ip:%' or key like 'recovery:%' returning key`;
 const left = await q`select
   (select count(*)::int from users where email like 'lodestar-e2e-%@example.com' or email like 'lodestar-test-%@example.com') as test_users,
   (select count(*)::int from users) as users,
   (select count(*)::int from sessions) as sessions,
-  (select count(*)::int from items) as items`;
-console.log('deleted test users:', users.length, '| rate-limit rows:', rates.length);
-console.log('remaining: test users', left[0].test_users, '| all users', left[0].users, '| sessions', left[0].sessions, '| items', left[0].items);
+  (select count(*)::int from items) as items,
+  (select count(*)::int from community_trails) as ctrails`;
+console.log('deleted test users:', users.length, '| rate-limit rows:', rates.length + ctRates.length);
+console.log('remaining: test users', left[0].test_users, '| all users', left[0].users, '| sessions', left[0].sessions, '| items', left[0].items, '| community trails', left[0].ctrails);

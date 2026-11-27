@@ -6,16 +6,18 @@ import { buildStyle, RASTERS } from './style.js';
 import { fetchOverpass, difficultyFor, DIFF_LABEL, poisNear, nearestParking } from './trails.js';
 import { planDownload, downloadArea, deleteArea, refreshAreaData, MAX_TILES, MAX_AREA_KM2, TILE_CACHE } from './offline.js';
 import { $, $$, esc, ICON, toast, modal, confirmBox, promptBox, initSheet, emojiImage } from './ui.js';
+import * as CT from './community.js';
 
 const HOME = [-94.7114, 45.3805]; // Paynesville, MN
 const S = { // persisted settings
-  mode: 'hike', base: 'trail', theme: 'auto', imperial: true, voice: true, wake: true, offRoute: 45, showPois: true, showAreas: true,
+  mode: 'hike', base: 'trail', theme: 'auto', imperial: true, voice: true, wake: true, offRoute: 45, showPois: true, showAreas: true, showCommunity: true,
 };
 const st = { // runtime state
   data: { ways: new Map(), trails: new Map(), pois: new Map() }, live: null, areas: [],
   filters: { activity: 'all', diff: -1, len: 'any', dog: false, kid: false, stroller: false, wheelchair: false, fourwd: false },
   query: '', places: [], view: null, viewStack: [], selected: null, pos: null, heading: null, locate: 0, rec: null, nav: null, plan: null,
   favorites: new Map(), wakeLock: null, installEvt: null, loading: false, vehicle: null,
+  ctrails: new Map(), cfilt: { bf: 'all', dist: 50, mine: false, fits: false }, ctDraft: null,
 };
 let map, sheet;
 
@@ -53,6 +55,8 @@ async function boot() {
   show('explore');
   online();
   addEventListener('online', online); addEventListener('offline', online);
+  addEventListener('online', () => flushCommunity());
+  flushCommunity();
   if (!user) syncNow();
   resumeRecording();
   maybeInstallHint();
@@ -117,6 +121,7 @@ async function loadAll() {
   rebuildData(datas);
   st.waypoints = await db.all('waypoints');
   st.vehicle = (await db.get('profile', 'vehicle')) || null;
+  st.ctrails = new Map((await CT.cached()).map(t => [t.id, t]));
   refreshOverlays(); updateVehiclePill();
 }
 // Re-read synced data after a pull from the server and refresh whatever is on screen.
@@ -176,7 +181,7 @@ function addOverlays() {
   const c = COLORS();
   for (const [k, e] of Object.entries(POI_EMOJI)) if (!map.hasImage('poi-' + k)) map.addImage('poi-' + k, emojiImage(e, isDark() ? '#2a2c2b' : '#fff', '#8a7a62'), { pixelRatio: 2 });
   for (const [k, e] of Object.entries(WPT_ICONS)) if (!map.hasImage('wpt-' + k)) map.addImage('wpt-' + k, emojiImage(e, isDark() ? '#2a2c2b' : '#fff', '#d9822b'), { pixelRatio: 2 });
-  for (const s of ['areas', 'ways', 'hl', 'route', 'track', 'pois', 'wpts', 'plan', 'navdone']) if (!map.getSource(s)) map.addSource(s, { type: 'geojson', data: empty() });
+  for (const s of ['areas', 'ways', 'ctrails', 'hl', 'route', 'track', 'pois', 'wpts', 'plan', 'navdone']) if (!map.getSource(s)) map.addSource(s, { type: 'geojson', data: empty() });
   map.addLayer({ id: 'areas-line', type: 'line', source: 'areas', paint: { 'line-color': '#8a7a62', 'line-width': 1.5, 'line-dasharray': [3, 2], 'line-opacity': 0.8 } });
   const isDrive = S.mode === 'drive';
   map.addLayer({ id: 'ways-faint', type: 'line', source: 'ways', minzoom: 10, filter: isDrive ? ['!', ['get', 'o']] : ['!', ['get', 'h']], paint: { 'line-color': c.faint, 'line-width': 1.5 } });
@@ -184,6 +189,8 @@ function addOverlays() {
   const wcol = isDrive ? ['match', ['get', 'do'], 0, c.oeasy, 1, c.omod, c.ohard] : ['match', ['get', 'dh'], 0, c.easy, 1, c.mod, c.hard], ww = ['interpolate', ['linear'], ['zoom'], 10, 1.6, 16, 4];
   map.addLayer({ id: 'ways-line', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isDrive ? ['get', 'o'] : ['get', 'h'], ['get', 'paved']], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww } });
   map.addLayer({ id: 'ways-dash', type: 'line', source: 'ways', minzoom: 9, filter: ['all', isDrive ? ['get', 'o'] : ['get', 'h'], ['!', ['get', 'paved']]], layout: { 'line-join': 'round' }, paint: { 'line-color': wcol, 'line-width': ww, 'line-dasharray': [2.2, 1.1] } });
+  map.addLayer({ id: 'ct-case', type: 'line', source: 'ctrails', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDark() ? 'rgba(0,0,0,.6)' : 'rgba(255,255,255,.9)', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 3, 16, 8] } });
+  map.addLayer({ id: 'ct-line', type: 'line', source: 'ctrails', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['case', ['get', 'mine'], '#7c4dff', '#0b9e9a'], 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1.8, 16, 4.5], 'line-dasharray': [1.6, 1] } });
   map.addLayer({ id: 'hl-glow', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDrive ? '#f0a050' : '#4fb477', 'line-width': 12, 'line-opacity': 0.35 } });
   map.addLayer({ id: 'hl-line', type: 'line', source: 'hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': isDrive ? '#d9822b' : '#2f7d4f', 'line-width': 5 } });
   map.addLayer({ id: 'route-case', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#fff', 'line-width': 9 } });
@@ -208,6 +215,7 @@ function refreshOverlays() {
   setSrc('ways', { type: 'FeatureCollection', features: feats });
   setSrc('pois', { type: 'FeatureCollection', features: S.showPois ? [...st.data.pois.values()].map(p => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lon, p.lat] }, properties: { id: p.id, kind: p.kind, name: p.name } })) : [] });
   setSrc('wpts', { type: 'FeatureCollection', features: (st.waypoints || []).map(w => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [w.lon, w.lat] }, properties: { id: w.id, icon: WPT_ICONS[w.icon] ? w.icon : 'pin', name: w.name } })) });
+  refreshCommunityLayer();
   setSrc('areas', { type: 'FeatureCollection', features: S.showAreas ? st.areas.map(a => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[a.bbox[0], a.bbox[1]], [a.bbox[2], a.bbox[1]], [a.bbox[2], a.bbox[3]], [a.bbox[0], a.bbox[3]], [a.bbox[0], a.bbox[1]]]] }, properties: { name: a.name } })) : [] });
 }
 function setMode(m) {
@@ -215,7 +223,7 @@ function setMode(m) {
   $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   st.filters.activity = m === 'drive' ? 'offroad' : 'all'; st.filters.diff = -1;
   if (map.getLayer('ways-line')) { // restyle trail overlay
-    for (const id of ['ways-faint', 'ways-case', 'ways-line', 'ways-dash', 'hl-glow', 'hl-line']) map.removeLayer(id);
+    for (const id of ['ways-faint', 'ways-case', 'ways-line', 'ways-dash', 'ct-case', 'ct-line', 'hl-glow', 'hl-line']) map.removeLayer(id);
     for (const id of ['route-case', 'route-line', 'navdone-line', 'track-line', 'plan-pts', 'pois-sym', 'wpts-sym', 'areas-line']) map.removeLayer(id);
     addOverlays();
   }
@@ -225,7 +233,7 @@ function setMode(m) {
 }
 function highlight(t) {
   st.selected = t;
-  setSrc('hl', t ? { type: 'FeatureCollection', features: trailSegs(t).map(c => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: c }, properties: {} })) } : empty());
+  setSrc('hl', t ? { type: 'FeatureCollection', features: (t.community ? [CT.geometry(t)] : trailSegs(t)).map(c => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: c }, properties: {} })) } : empty());
 }
 function fitTo(bbox, extraBottom = 0) {
   const H = innerHeight, sheetH = sheet.get() === 'full' ? H * 0.5 : sheet.get() === 'half' ? H * 0.52 : 230;
@@ -238,6 +246,7 @@ function onDetent(d) {
   $('#fabs').style.visibility = d === 'full' && innerWidth < 760 ? 'hidden' : '';
 }
 function onMapClick(e) {
+  if (st.view?.name === 'trailForm' || (st.view?.name === 'createTrail' && st.view.args?.mode === 'rec')) return;
   if (st.plan) return planClick(e);
   if (st.view?.name === 'newArea') return;
   const pad = 10, box = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]];
@@ -245,6 +254,8 @@ function onMapClick(e) {
   if (w) return show('waypoint', { id: w.properties.id });
   const p = map.queryRenderedFeatures(box, { layers: ['pois-sym'] })[0];
   if (p) return showPoi(st.data.pois.get(p.properties.id));
+  const ct = map.getLayer('ct-line') && map.queryRenderedFeatures(box, { layers: ['ct-line'] })[0];
+  if (ct) return show('ctrail', { id: ct.properties.id });
   const f = map.queryRenderedFeatures(box, { layers: ['ways-line', 'ways-dash', 'ways-faint'] })[0];
   if (f) {
     const wid = f.properties.id; const t = [...st.data.trails.values()].find(t => t.wayIds.includes(wid));
@@ -281,15 +292,17 @@ function wireChrome() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (st.rec || st.nav)) keepAwake(true); });
 }
 function setTab(name) { $$('#tabbar button').forEach(b => b.classList.toggle('on', b.dataset.tab === name)); }
-const TAB_OF = { explore: 'explore', trail: 'explore', record: 'record', activity: 'saved', saved: 'saved', route: 'saved', waypoint: 'saved', plan: 'saved', offline: 'offline', newArea: 'offline', more: 'more', nav: 'record' };
+const TAB_OF = { explore: 'explore', trail: 'explore', record: 'record', activity: 'saved', saved: 'saved', route: 'saved', waypoint: 'saved', plan: 'saved', offline: 'offline', newArea: 'offline', more: 'more', nav: 'record', community: 'explore', ctrail: 'explore', createTrail: 'explore', trailForm: 'explore' };
 function show(name, args = {}, push = true) {
   if (push && st.view) st.viewStack.push(st.view);
   if (st.view?.name === 'newArea' && name !== 'newArea') endAreaSelect();
   if (st.view?.name === 'trail' && name !== 'trail' && name !== 'nav') highlight(null);
+  if (st.view?.name === 'ctrail' && name !== 'ctrail' && name !== 'nav') highlight(null);
+  if (['createTrail', 'trailForm'].includes(st.view?.name) && !['createTrail', 'trailForm'].includes(name)) endTrailDraft();
   st.view = { name, args }; setTab(TAB_OF[name] || 'explore');
   const fn = VIEWS[name]; sheet.body.scrollTop = 0; fn(args);
 }
-function back() { const v = st.viewStack.pop(); if (v) { if (st.view?.name === 'newArea') endAreaSelect(); if (st.view?.name === 'trail') highlight(null); st.view = v; setTab(TAB_OF[v.name]); VIEWS[v.name](v.args); } else show('explore', {}, false); }
+function back() { const v = st.viewStack.pop(); if (v) { if (st.view?.name === 'newArea') endAreaSelect(); if (st.view?.name === 'trail' || st.view?.name === 'ctrail') highlight(null); if (['createTrail', 'trailForm'].includes(st.view?.name) && !['createTrail', 'trailForm'].includes(v.name)) endTrailDraft(); st.view = v; setTab(TAB_OF[v.name]); VIEWS[v.name](v.args); } else show('explore', {}, false); }
 const hdr = (title, opts = {}) => `<div class="hdr">${st.viewStack.length || opts.back ? `<button class="back" data-back aria-label="Back">${ICON.back}</button>` : ''}<h2>${esc(title)}</h2>${opts.right || ''}</div>`;
 function paint(html) { sheet.body.innerHTML = html; const b = sheet.body.querySelector('[data-back]'); if (b) b.onclick = back; }
 
@@ -323,6 +336,7 @@ function renderExplore() {
   paint(`
     <div class="peek-row" style="margin-bottom:8px"><div><div style="font-weight:700;font-size:20px;letter-spacing:-.02em" id="exTitle">${drv ? 'Drive routes' : 'Trails'} nearby</div>${drv ? `<div class="sub drive-sub">${st.vehicle ? '🚙 Driving: ' + esc(vehicleName(st.vehicle)) : '<a href="#" id="exAddVeh">Add your vehicle</a> to flag routes that need 4WD'}</div>` : ''}<div class="sub" id="exSub"></div></div>
       <button class="btn" id="btnArea" style="height:36px;font-size:14px;padding:0 12px">${st.loading ? 'Loading…' : '↻ Search area'}</button></div>
+    <div class="row ct-row"><button class="btn" id="exCreate">${ICON.plus} Create trail</button><button class="btn" id="exCommunity">🌐 Community</button></div>
     <div class="chips">${drv ? (st.vehicle ? chip('✓ Fits my vehicle', f.fits, 'data-flag="fits"') : '') + chip('⛰️ 4WD / hard', f.fourwd, 'data-flag="fourwd"') : ''}${acts.map(([k, l]) => chip(l, f.activity === k, `data-act="${k}"`)).join('')}
       ${[[-1, 'Any difficulty'], [0, 'Easy'], [1, 'Moderate'], [2, 'Hard']].map(([k, l]) => chip(l, f.diff === k, `data-diff="${k}"`)).join('')}</div>
     <div class="chips">${[['any', 'Any length'], ['s', '< 2 mi'], ['m', '2–5 mi'], ['l', '5–10 mi'], ['xl', '10+ mi']].map(([k, l]) => chip(G.units.imperial ? l : l.replace('2 mi', '3 km').replace('2–5 mi', '3–8 km').replace('5–10 mi', '8–16 km').replace('10+ mi', '16+ km'), f.len === k, `data-len="${k}"`)).join('')}
@@ -332,6 +346,8 @@ function renderExplore() {
     <div class="list" id="trailList"></div>
     <p class="muted" style="margin-top:18px">Trail data © OpenStreetMap contributors. Conditions change — check local rules, closures, and land ownership before you go. Offroad: stay on legal routes.</p>`);
   $('#btnArea').onclick = () => loadVisibleTrails();
+  $('#exCreate').onclick = () => startCreateTrail();
+  $('#exCommunity').onclick = () => show('community');
   const av = $('#exAddVeh'); if (av) av.onclick = e => { e.preventDefault(); editVehicle(); };
   $$('[data-act]').forEach(b => b.onclick = () => { f.activity = b.dataset.act; renderExplore(); });
   $$('[data-diff]').forEach(b => b.onclick = () => { f.diff = +b.dataset.diff; renderExplore(); });
@@ -641,10 +657,12 @@ function renderRecord() {
       <div class="field"><span>Activity</span><div class="seg seg3 small" style="--n:${n};--i:${i}">${Object.entries(ACTS).map(([k, l]) => `<button data-ract="${k}" class="${k === st._recAct ? 'on' : ''}">${l.split(' ')[0]}</button>`).join('')}<i class="seg-thumb"></i></div><div class="muted" style="margin-top:4px">${ACTS[st._recAct]}</div></div>
       <button class="btn primary block" id="rStart" style="margin-top:8px;height:54px;font-size:17px">${ICON.play} Start recording</button>
       <div class="row" style="margin-top:10px"><button class="btn" id="rPlan">${ICON.route} Plan a route</button><button class="btn" id="rImport">Import GPX</button></div>
+      <button class="btn block" id="rCreate" style="margin-top:8px">${ICON.plus} Create a trail to share</button>
       <h3>Recent activities</h3><div class="list" id="rRecent"></div>`);
     $$('[data-ract]').forEach(b => b.onclick = () => { st._recAct = b.dataset.ract; renderRecord(); });
     $('#rStart').onclick = () => startRecording(st._recAct);
     $('#rPlan').onclick = () => show('plan', {});
+    $('#rCreate').onclick = () => startCreateTrail();
     $('#rImport').onclick = () => $('#fileGpx').click();
     db.all('tracks').then(ts => { const el = $('#rRecent'); if (!el) return; ts.sort((a, b) => b.created - a.created); el.innerHTML = ts.slice(0, 5).map(activityCard).join('') || '<p class="muted">No activities yet.</p>'; $$('[data-track]', el).forEach(b => b.onclick = () => show('activity', { id: b.dataset.track })); });
     return;
@@ -904,8 +922,9 @@ function leg(a, b) {
   if (!path) return [a, b];
   return [a, ...path, b];
 }
-function planAdd(pt) { const p = st.plan || (st.plan = { pts: [], legs: [], snap: true }); if (p.pts.length) p.legs.push(leg(p.pts.at(-1), pt)); p.pts.push(pt); drawPlan(); if (st.view?.name === 'plan') renderPlan(); }
-function recomputePlan() { const p = st.plan; p.legs = []; for (let i = 1; i < p.pts.length; i++) p.legs.push(leg(p.pts[i - 1], p.pts[i])); drawPlan(); renderPlan(); }
+function planAdd(pt) { const p = st.plan || (st.plan = { pts: [], legs: [], snap: true }); if (p.pts.length) p.legs.push(leg(p.pts.at(-1), pt)); p.pts.push(pt); drawPlan(); rerenderPlan(); }
+function recomputePlan() { const p = st.plan; p.legs = []; for (let i = 1; i < p.pts.length; i++) p.legs.push(leg(p.pts[i - 1], p.pts[i])); drawPlan(); rerenderPlan(); }
+function rerenderPlan() { const v = st.view?.name; if (v === 'plan') renderPlan(); else if (v === 'createTrail') renderCreateTrail(st.view.args); }
 function planClick(e) { planAdd([+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)]); }
 function drawPlan() {
   const c = planCoords(), p = st.plan;
@@ -930,8 +949,9 @@ async function renderSaved(args = {}) {
   const el = $('#svList');
   if (tab === 'trails') {
     const favs = [...st.favorites.values()].sort((a, b) => b.saved - a.saved);
-    el.innerHTML = favs.map(f => trailCard(f.trail)).join('') || `<div class="empty"><div class="big">♡</div>Tap <b>Save</b> on any trail to keep it here — even outside your offline areas.</div>`;
+    el.innerHTML = favs.map(f => f.community ? ctCard(f.community) : trailCard(f.trail)).join('') || `<div class="empty"><div class="big">♡</div>Tap <b>Save</b> on any trail to keep it here — even outside your offline areas.</div>`;
     $$('[data-trail]', el).forEach(b => b.onclick = () => show('trail', { id: b.dataset.trail }));
+    $$('[data-ctrail]', el).forEach(b => b.onclick = () => show('ctrail', { id: b.dataset.ctrail }));
   } else if (tab === 'activities') {
     const ts = (await db.all('tracks')).sort((a, b) => b.created - a.created);
     el.innerHTML = ts.map(activityCard).join('') || `<div class="empty"><div class="big">●</div>Record a hike or a drive from the <b>Record</b> tab, or import a GPX file.</div>`;
@@ -960,6 +980,7 @@ async function renderActivity({ id }) {
     <canvas class="profile" id="acProf"></canvas>
     <div class="actions"><button class="act primary" id="acFollow"><i>${ICON.nav}</i>Follow</button><button class="act" id="acShare"><i>${ICON.share}</i>Share</button><button class="act" id="acRename"><i>${ICON.pencil}</i>Rename</button><button class="act" id="acDel"><i>${ICON.trash}</i>Delete</button></div>
     ${t.notes ? `<div class="note">${esc(t.notes)}</div>` : ''}
+    <button class="btn block" id="acTrail" style="margin:6px 0 4px">${ICON.plus} Create a trail from this recording</button>
     <h3>Notes & photos (private)</h3><div id="acNotes"></div>
     <div class="row" style="margin-top:8px"><button class="btn" id="acNote">${ICON.pencil} Add note</button><button class="btn" id="acPhoto">${ICON.camera} Add photo</button></div>`);
   const ele = all.filter(p => p.ele != null);
@@ -970,6 +991,7 @@ async function renderActivity({ id }) {
     () => snapshotCard(G.bboxOf(coords), t.name, [['Distance', G.fmtDist(s.dist, true)], ['Time', G.fmtDur(s.moving)], ['Gain', G.fmtElev(s.gain)]]), `https://maps.apple.com/?ll=${coords[0][1]},${coords[0][0]}`);
   $('#acRename').onclick = async () => { const n = await promptBox('Rename activity', t.name); if (n) { t.name = n; await db.put('tracks', t); renderActivity({ id }); } };
   $('#acDel').onclick = async () => { if (await confirmBox('Delete activity?', 'This removes it from this device.', 'Delete', true)) { await db.del('tracks', id); drawTrack([]); back(); } };
+  $('#acTrail').onclick = () => trailFromTrack(t);
   $('#acNote').onclick = () => noteEditor('track:' + id, () => renderNotes('track:' + id, $('#acNotes')));
   $('#acPhoto').onclick = () => addPhoto('track:' + id, () => renderNotes('track:' + id, $('#acNotes')));
   renderNotes('track:' + id, $('#acNotes'));
@@ -1115,11 +1137,12 @@ async function runDownload() {
 function layersSheet() {
   const bases = [['trail', 'Lodestar', 'Trails, roads & terrain · offline'], ['topo', 'USGS Topo', 'Contours & public land · offline'], ['sat', 'Satellite', 'USGS imagery · offline'], ['sathyb', 'Satellite + labels', 'USGS imagery & topo · online cache'], ['otm', 'OpenTopoMap', 'Topo · online only']];
   modal(`<h2>Map style</h2><div class="list">${bases.map(([k, n, d]) => `<button class="card${S.base === k ? '' : ''}" data-base="${k}" style="${S.base === k ? 'outline:2px solid var(--accent)' : ''}"><div class="thumb">${{ trail: '🧭', topo: '⛰️', sat: '🛰️', sathyb: '🛰️', otm: '🗻' }[k]}</div><div class="body"><div class="title">${n}</div><div class="meta">${d}</div></div>${S.base === k ? '✓' : ''}</button>`).join('')}</div>
-   <h3>Overlays</h3><div class="group"><div><label>Points of interest</label><label class="switch"><input type="checkbox" id="lyPoi" ${S.showPois ? 'checked' : ''}><i></i></label></div><div><label>Offline area outlines</label><label class="switch"><input type="checkbox" id="lyAreas" ${S.showAreas ? 'checked' : ''}><i></i></label></div></div>
+   <h3>Overlays</h3><div class="group"><div><label>Points of interest</label><label class="switch"><input type="checkbox" id="lyPoi" ${S.showPois ? 'checked' : ''}><i></i></label></div><div><label>Offline area outlines</label><label class="switch"><input type="checkbox" id="lyAreas" ${S.showAreas ? 'checked' : ''}><i></i></label></div><div><label>Community trails</label><label class="switch"><input type="checkbox" id="lyCt" ${S.showCommunity ? 'checked' : ''}><i></i></label></div></div>
    <button class="btn block" style="margin-top:12px" data-x>Done</button>`, (m, close) => {
     $$('[data-base]', m).forEach(b => b.onclick = () => { setBase(b.dataset.base); close(); if (b.dataset.base === 'otm' && !navigator.onLine) toast('OpenTopoMap needs a connection'); });
     m.querySelector('#lyPoi').onchange = e => { S.showPois = e.target.checked; saveSettings(); refreshOverlays(); };
     m.querySelector('#lyAreas').onchange = e => { S.showAreas = e.target.checked; saveSettings(); refreshOverlays(); };
+    m.querySelector('#lyCt').onchange = e => { S.showCommunity = e.target.checked; saveSettings(); refreshOverlays(); };
     m.querySelector('[data-x]').onclick = close;
   });
 }
@@ -1321,6 +1344,276 @@ function editVehicle() {
   });
 }
 
+// ---------------- community trails: create, share, browse ----------------
+const bfIcon = t => CT.BEST_FOR[t.bestFor?.[0]]?.[0] || '🧭';
+const ctNear = () => st.pos || map.getCenter().toArray();
+const ctAct = t => (t.bestFor || []).some(b => CT.VEHICLE_USES.includes(b)) ? 'offroad' : (t.bestFor || []).includes('bike') ? 'bike' : 'hike';
+const ctIsVehicle = t => t.clearance !== 'any' || (t.bestFor || []).some(b => CT.VEHICLE_USES.includes(b));
+function refreshCommunityLayer() {
+  const feats = S.showCommunity ? [...st.ctrails.values()].filter(t => CT.geometry(t).length > 1)
+    .map(t => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: CT.geometry(t) }, properties: { id: t.id, mine: !!t.mine, name: t.name } })) : [];
+  setSrc('ctrails', { type: 'FeatureCollection', features: feats });
+}
+async function flushCommunity() {
+  if (!acct.user || !navigator.onLine) return;
+  const moved = await CT.flushPending().catch(() => []);
+  if (!moved.length) return;
+  st.ctrails = new Map((await CT.cached()).map(t => [t.id, t])); refreshCommunityLayer();
+  toast(`${moved.length} trail${moved.length > 1 ? 's' : ''} uploaded`);
+  if (st.view?.name === 'ctrail') { const m = moved.find(x => x.from === st.view.args.id); if (m) st.view.args.id = m.to; }
+  if (['community', 'ctrail'].includes(st.view?.name)) VIEWS[st.view.name](st.view.args);
+}
+function ctCard(t) {
+  const d = st.pos ? CT.hav(st.pos, t.start) : t._d;
+  const fit = S.mode === 'drive' && ctIsVehicle(t) ? CT.ctFits(t, st.vehicle) : null;
+  return `<button class="card" data-ctrail="${esc(t.id)}"><div class="thumb ct-thumb">${bfIcon(t)}</div><div class="body"><div class="title">${st.favorites.has('c:' + t.id) ? '♥︎ ' : ''}${esc(t.name)}</div>
+   <div class="meta"><span class="diff d${Math.min(t.difficulty, 2)}">${CT.CT_DIFF[t.difficulty] || ''}</span><i class="dot"></i><span>${G.fmtDist(t.len)}</span>${d != null ? `<i class="dot"></i><span>${G.fmtDist(d)} away</span>` : ''}${fit === false ? '<i class="dot"></i><span class="tagwarn">⚠︎ Check vehicle</span>' : ''}</div>
+   <div class="meta ct-by">${t.mine ? `<span class="tagc">Your trail</span><i class="dot"></i><span>${t._pending ? '⏳ Waiting for signal' : t.shared ? '🌐 Shared' : '🔒 Private'}</span>` : `<span>by ${esc(t.author)}</span><i class="dot"></i><span>${(t.bestFor || []).map(b => CT.BEST_FOR[b]?.[1]).filter(Boolean).slice(0, 2).join(', ')}</span>`}</div></div>${ICON.chev}</button>`;
+}
+async function renderCommunity() {
+  const f = st.cfilt, drv = S.mode === 'drive';
+  const dists = [[10, '10 mi', '16 km'], [25, '25 mi', '40 km'], [50, '50 mi', '80 km'], [150, '150 mi', '240 km']];
+  paint(`${hdr('Community trails', { back: true })}
+    <p class="sub">Trails made and shared by Lodestar members. Only the person who made a trail can change or delete it.</p>
+    <button class="btn primary block" id="cmCreate">${ICON.plus} Create a trail</button>
+    <div class="chips" style="margin-top:12px">${chip('All', f.bf === 'all', 'data-cbf="all"')}${Object.entries(CT.BEST_FOR).map(([k, [e, l]]) => chip(`${e} ${l}`, f.bf === k, `data-cbf="${k}"`)).join('')}</div>
+    <div class="chips">${dists.map(([k, mi, km]) => chip('Within ' + (G.units.imperial ? mi : km), f.dist === k, `data-cdist="${k}"`)).join('')}${chip('My trails', f.mine, 'data-cmine')}${drv && st.vehicle ? chip('✓ Fits my vehicle', f.fits, 'data-cfits') : ''}</div>
+    <div class="sub" id="cmSub" style="margin:4px 0 6px">Loading…</div>
+    <div class="list" id="cmList"></div>
+    <p class="muted" style="margin-top:16px">Community trails aren't verified by Lodestar. Check access, closures and land ownership before you go. See a problem? Open the trail and tap <b>Report</b>.</p>`);
+  $('#cmCreate').onclick = () => startCreateTrail();
+  $$('[data-cbf]').forEach(b => b.onclick = () => { f.bf = b.dataset.cbf; renderCommunity(st.view.args); });
+  $$('[data-cdist]').forEach(b => b.onclick = () => { f.dist = +b.dataset.cdist; renderCommunity(st.view.args); });
+  $('[data-cmine]').onclick = () => { f.mine = !f.mine; renderCommunity(st.view.args); };
+  const fb = $('[data-cfits]'); if (fb) fb.onclick = () => { f.fits = !f.fits; renderCommunity(st.view.args); };
+  if (sheet.get() === 'peek') sheet.set('half');
+  const near = ctNear(), km = f.dist * 1.609344, bestFor = f.bf === 'all' ? null : f.bf;
+  const fill = (trails, offline) => {
+    const el = $('#cmList'); if (!el || st.view?.name !== 'community') return;
+    let list = trails.filter(t => (!f.mine || t.mine) && (!f.fits || !st.vehicle || CT.ctFits(t, st.vehicle) !== false));
+    for (const t of list) t._d = CT.hav(near, t.start);
+    list.sort((a, b) => a._d - b._d);
+    $('#cmSub').textContent = `${list.length} trail${list.length === 1 ? '' : 's'} within ${G.units.imperial ? f.dist + ' mi' : Math.round(km) + ' km'}${offline ? ' · offline: showing trails saved on this device' : ''}`;
+    el.innerHTML = list.slice(0, 100).map(ctCard).join('') || `<div class="empty"><div class="big">🌐</div>${f.mine ? 'You haven\'t made a trail here yet.' : 'No community trails here yet.'} Be the first — tap <b>Create a trail</b>.</div>`;
+    $$('[data-ctrail]', el).forEach(b => b.onclick = () => show('ctrail', { id: b.dataset.ctrail }));
+  };
+  fill([...st.ctrails.values()].filter(t => CT.hav(near, t.start) < km * 1000 && (!bestFor || t.bestFor.includes(bestFor))), !navigator.onLine);
+  try {
+    const { trails, offline } = await CT.listNear(near, { radiusKm: km, bestFor });
+    st.ctrails = new Map((await CT.cached()).map(t => [t.id, t])); refreshCommunityLayer();
+    fill(trails, offline);
+    // frame the nearest results once when the list is first opened (not on every filter tap)
+    if (st.view?.name === 'community' && !st.view.args.framed && trails.length) {
+      st.view.args.framed = true;
+      const near10 = trails.map(t => [CT.hav(near, t.start), t]).sort((a, b) => a[0] - b[0]).slice(0, 10).map(x => x[1]);
+      fitTo([Math.min(...near10.map(t => t.bbox[0])), Math.min(...near10.map(t => t.bbox[1])), Math.max(...near10.map(t => t.bbox[2])), Math.max(...near10.map(t => t.bbox[3]))]);
+    }
+  } catch (e) { const s = $('#cmSub'); if (s && st.view?.name === 'community') s.textContent = e.message || 'Couldn\'t load community trails.'; }
+}
+
+// Create: draw on the map (reuses the route planner, snapping optional) or start from a GPS recording.
+function startCreateTrail() {
+  if (st.nav) return toast('End navigation first');
+  st.plan = { pts: [], legs: [], snap: false, name: '', forTrail: true };
+  st.ctDraft = null; drawPlan();
+  show('createTrail', { mode: 'draw' });
+}
+function endTrailDraft() { if (st.plan?.forTrail) endPlan(); else if (!st.nav) drawRoute(null); st.ctDraft = null; }
+function renderCreateTrail(args = {}) {
+  const mode = args.mode || 'draw';
+  if (!st.plan) st.plan = { pts: [], legs: [], snap: false, name: '', forTrail: true };
+  const p = st.plan, coords = planCoords(), L = G.lineLength(coords);
+  $('#crosshair').hidden = true;
+  paint(`${hdr('Create a trail', { back: true })}
+    <div class="seg seg3 small" style="--n:2;--i:${mode === 'draw' ? 0 : 1}"><button data-cm="draw" class="${mode === 'draw' ? 'on' : ''}">✏️ Draw on map</button><button data-cm="rec" class="${mode === 'rec' ? 'on' : ''}">● From a recording</button><i class="seg-thumb"></i></div>
+    ${mode === 'draw' ? `
+    <p class="sub" style="margin-top:10px">Tap the map along your trail to drop points.${p.snap ? ' Points are joined along mapped paths when possible.' : ' Turn on snapping to follow mapped paths.'}</p>
+    <div class="stats"><div class="stat"><span>Distance</span><b>${G.fmtDist(L, true)}</b></div><div class="stat"><span>Points</span><b id="ctPts">${p.pts.length}</b></div><div class="stat"><span>Gain</span><b id="ctG">–</b></div></div>
+    <canvas class="profile" id="ctDProf" style="${coords.length > 1 ? '' : 'display:none'}"></canvas>
+    <div class="group" style="margin:8px 0"><div><label>Snap to mapped paths</label><label class="switch"><input type="checkbox" id="ctSnap" ${p.snap ? 'checked' : ''}><i></i></label></div></div>
+    <div class="row"><button class="btn" id="ctUndo" ${p.pts.length ? '' : 'disabled'}>↶ Undo</button><button class="btn" id="ctClear" ${p.pts.length ? '' : 'disabled'}>Clear</button><button class="btn" id="ctMe" ${st.pos ? '' : 'disabled'}>+ My spot</button></div>
+    <button class="btn primary block" id="ctNext" style="margin-top:12px" ${coords.length > 1 ? '' : 'disabled'}>Next: name & details</button>`
+    : `<p class="sub" style="margin-top:10px">Turn a hike or drive you recorded with GPS into a trail.</p><div class="list" id="ctTracks"><p class="muted">Loading…</p></div>
+    <button class="btn block" id="ctRecord" style="margin-top:10px">${ICON.play} Record a new one</button>`}`);
+  $$('[data-cm]').forEach(b => b.onclick = () => { st.view.args = { mode: b.dataset.cm }; renderCreateTrail(st.view.args); });
+  if (mode === 'draw') {
+    drawPlan();
+    $('#ctSnap').onchange = e => { p.snap = e.target.checked; recomputePlan(); };
+    $('#ctUndo').onclick = () => { p.pts.pop(); p.legs.pop(); drawPlan(); renderCreateTrail(args); };
+    $('#ctClear').onclick = () => { p.pts = []; p.legs = []; drawPlan(); renderCreateTrail(args); };
+    $('#ctMe').onclick = () => planAdd(st.pos);
+    $('#ctNext').onclick = () => {
+      st.ctDraft = { coords: CT.thin(planCoords()), source: 'drawn', name: '', bestFor: S.mode === 'drive' ? ['offroad4wd'] : ['hike'], difficulty: 1, clearance: S.mode === 'drive' ? 'high' : 'any', notes: '', shared: false };
+      show('trailForm', {});
+    };
+    if (coords.length > 1) G.profile(coords).then(pr => { if (pr && $('#ctDProf')) { drawProfile($('#ctDProf'), pr, '#7c4dff'); $('#ctG').textContent = G.fmtElev(pr.gain); } });
+    if (sheet.get() === 'full') sheet.set('half');
+  } else {
+    $('#ctRecord').onclick = () => { st.viewStack = []; show('record', {}, false); toast('When you finish, open the activity and tap “Create a trail from this recording”.', 4200); };
+    db.all('tracks').then(ts => {
+      const el = $('#ctTracks'); if (!el) return; ts.sort((a, b) => b.created - a.created);
+      el.innerHTML = ts.slice(0, 30).map(activityCard).join('') || '<p class="muted">No recordings yet. Record one from the Record tab, or import a GPX file.</p>';
+      $$('[data-track]', el).forEach(b => b.onclick = async () => trailFromTrack(await db.get('tracks', b.dataset.track)));
+    });
+  }
+}
+function trailFromTrack(t) {
+  if (!t) return;
+  let coords = t.segments.flat().map(p => [p.lon, p.lat]);
+  if (coords.length < 2) return toast('This recording has no path to use');
+  coords = CT.thin(coords.length > 400 ? G.simplify(coords, 3) : coords);
+  const bf = { hike: 'hike', walk: 'walk', run: 'run', bike: 'bike', offroad: 'offroad4wd' }[t.activity] || 'hike';
+  if (st.plan?.forTrail) endPlan();
+  st.ctDraft = { coords, source: 'recorded', name: t.name, bestFor: [bf], difficulty: 1, clearance: bf === 'offroad4wd' ? 'high' : 'any', notes: '', shared: false };
+  show('trailForm', {});
+}
+function renderTrailForm() {
+  const d = st.ctDraft; if (!d) return show('explore', {}, false);
+  const edit = !!d.id, len = d.coords ? G.lineLength(d.coords) : d.len;
+  if (d.coords?.length > 1) { drawRoute(d.coords); if (!st.plan) fitTo(G.bboxOf(d.coords)); }
+  const me = acct.user?.name?.trim();
+  paint(`${hdr(edit ? 'Edit trail' : 'Trail details', { back: true })}
+    <div class="sub">${G.fmtDist(len, true)} · ${d.source === 'recorded' ? 'from your GPS recording' : 'drawn on the map'}</div>
+    <div class="field"><span>Name</span><input class="input" id="tfName" maxlength="${CT.CT_LIMITS.name}" placeholder="e.g. Ridge loop above the lake" value="${esc(d.name)}"></div>
+    <div class="field"><span>Best for <em class="muted">pick all that apply</em></span><div class="chips wrap">${Object.entries(CT.BEST_FOR).map(([k, [e, l]]) => chip(`${e} ${l}`, d.bestFor.includes(k), `data-bf="${k}"`)).join('')}</div></div>
+    <div class="field"><span>Difficulty</span><div class="seg seg3 small" id="tfDiff" style="--n:4;--i:${d.difficulty}">${CT.CT_DIFF.map((l, i) => `<button data-df="${i}" class="${i === d.difficulty ? 'on' : ''}">${l}</button>`).join('')}<i class="seg-thumb"></i></div></div>
+    <div class="field" id="tfVeh"><span>Vehicle requirement <em class="muted">for Drive mode's “Fits my vehicle”</em></span><div class="chips wrap">${Object.entries(CT.CLEARANCE).map(([k, l]) => chip(l, d.clearance === k, `data-cl="${k}"`)).join('')}</div></div>
+    <div class="field"><span>Notes <em class="muted" id="tfCount"></em></span><textarea class="input" id="tfNotes" maxlength="${CT.CT_LIMITS.notes}" placeholder="Parking, gates, water, seasonal closures, what makes it great…">${esc(d.notes)}</textarea></div>
+    <h3>Sharing</h3>
+    <div class="group share-group"><div><label for="tfShare"><b>Share with Lodestar community</b><div class="muted" id="tfShareTxt"></div></label><label class="switch"><input type="checkbox" id="tfShare" ${d.shared ? 'checked' : ''}><i></i></label></div></div>
+    <p class="err-line" id="tfErr" hidden></p>
+    <button class="btn primary block" id="tfSave" style="margin-top:14px">${edit ? 'Save changes' : 'Save trail'}</button>
+    ${edit ? '' : `<button class="btn block" style="margin-top:8px" data-back2>${d.source === 'recorded' ? 'Cancel' : 'Back to drawing'}</button>`}`);
+  const sync = () => {
+    d.name = $('#tfName').value; d.notes = $('#tfNotes').value; d.shared = $('#tfShare').checked;
+    $('#tfCount').textContent = d.notes.length > CT.CT_LIMITS.notes - 300 ? `${d.notes.length} / ${CT.CT_LIMITS.notes}` : '';
+    $('#tfVeh').hidden = !ctIsVehicle({ bestFor: d.bestFor, clearance: 'any' }) && d.clearance === 'any';
+    $('#tfShareTxt').innerHTML = d.shared
+      ? `Everyone signed in to Lodestar can see, follow and save it, shown as “by ${esc(me || 'Lodestar member')}” — never your email. Only you can edit or delete it.${me ? '' : ' Set a display name in Profile.'}`
+      : 'Private — only you can see it. Synced to your account.';
+  };
+  $$('[data-bf]').forEach(b => b.onclick = () => { const k = b.dataset.bf; d.bestFor = d.bestFor.includes(k) ? d.bestFor.filter(x => x !== k) : [...d.bestFor, k].slice(-6); $$('[data-bf]').forEach(x => x.classList.toggle('on', d.bestFor.includes(x.dataset.bf))); sync(); });
+  $$('[data-df]').forEach(b => b.onclick = () => { d.difficulty = +b.dataset.df; $('#tfDiff').style.setProperty('--i', d.difficulty); $$('[data-df]').forEach(x => x.classList.toggle('on', x === b)); });
+  $$('[data-cl]').forEach(b => b.onclick = () => { d.clearance = b.dataset.cl; $$('[data-cl]').forEach(x => x.classList.toggle('on', x === b)); sync(); });
+  ['#tfName', '#tfNotes'].forEach(s => $(s).addEventListener('input', sync)); $('#tfShare').onchange = sync;
+  sheet.body.querySelector('[data-back2]')?.addEventListener('click', back);
+  sync();
+  if (sheet.get() !== 'full') sheet.set('full');
+  $('#tfSave').onclick = async () => {
+    sync();
+    const err = m => { const e = $('#tfErr'); e.textContent = m; e.hidden = false; };
+    d.name = d.name.trim(); d.notes = d.notes.trim();
+    if (!d.name) return err('Give your trail a name.');
+    if (!d.bestFor.length) return err('Pick at least one thing this trail is best for.');
+    if (!ctIsVehicle({ bestFor: d.bestFor, clearance: 'any' })) d.clearance = d.clearance || 'any';
+    const b = $('#tfSave'); b.disabled = true; b.textContent = 'Saving…';
+    try {
+      const t = edit ? await CT.updateTrail(d.id, d) : await CT.createTrail(d);
+      st.ctrails.set(t.id, t); refreshCommunityLayer();
+      const fav = st.favorites.get('c:' + t.id); if (fav) { fav.community = { ...fav.community, ...t }; await db.put('favorites', fav); }
+      toast(t._pending ? 'Saved on this device — it will upload when you have signal' : t.shared ? (edit ? 'Trail updated' : 'Trail shared with the Lodestar community') : (edit ? 'Trail updated' : 'Trail saved (private)'), 3200);
+      st.viewStack = [{ name: 'community', args: {} }];
+      show('ctrail', { id: t.id }, false);
+    } catch (e) { b.disabled = false; b.textContent = edit ? 'Save changes' : 'Save trail'; err(e.message || 'Couldn\'t save the trail.'); }
+  };
+}
+
+// Detail
+async function renderCtrail({ id }) {
+  const fav = st.favorites.get('c:' + id);
+  const t = st.ctrails.get(id) || await CT.cachedOne(id) || fav?.community;
+  if (t) paintCtrail(t); else paint(`${hdr('Trail', { back: true })}<p class="sub">Loading…</p>`);
+  try {
+    const full = await CT.getTrail(id);
+    if (st.view?.name !== 'ctrail' || st.view.args.id !== id) return;
+    if (full) {
+      st.ctrails.set(id, full); refreshCommunityLayer();
+      if (fav && full.coords && full.updated !== fav.community?.updated) { fav.community = { ...full }; await db.put('favorites', fav); }
+      if (!t || full.updated !== t.updated || (full.coords && !t.coords)) paintCtrail(full);
+    } else if (!t) paint(`${hdr('Trail', { back: true })}<div class="empty"><div class="big">📵</div>This trail isn't saved on this device yet. Open it once with signal to keep it for offline.</div>`);
+  } catch (e) {
+    if (st.view?.name !== 'ctrail' || st.view.args.id !== id) return;
+    st.ctrails.delete(id); refreshCommunityLayer();
+    if (fav) paintCtrail(fav.community, { gone: true });
+    else { highlight(null); paint(`${hdr('Trail unavailable', { back: true })}<div class="empty"><div class="big">🧭</div>${esc(e.message || 'This trail isn\'t available.')}</div>`); }
+  }
+}
+function paintCtrail(t, opts = {}) {
+  const geom = CT.geometry(t), fav = st.favorites.has('c:' + t.id), act = ctAct(t);
+  highlight({ ...t, community: true });
+  const away = st.pos ? CT.hav(st.pos, t.start) : null, veh = ctIsVehicle(t), fit = CT.ctFits(t, st.vehicle);
+  paint(`${hdr(t.name, { back: true })}
+    <div class="sub"><span class="diff d${Math.min(t.difficulty, 2)}">${CT.CT_DIFF[t.difficulty]}</span> · ${G.fmtDist(t.len)} · Est. ${fmtHM(G.estTime(t.len, 0, act))}${away != null ? ' · ' + G.fmtDist(away) + ' away' : ''}</div>
+    <div class="ct-author">${t.mine ? `<span class="badge ct">Your trail</span><span class="badge">${t._pending ? '⏳ Waiting for signal to upload' : t.shared ? '🌐 Shared with community' : '🔒 Private'}</span>` : `<span class="avatar">${esc((t.author || 'L').trim()[0]?.toUpperCase() || 'L')}</span><span>Created by <b>${esc(t.author)}</b></span><span class="badge">🌐 Community</span>`}</div>
+    ${opts.gone ? '<div class="note warn-note">The creator no longer shares this trail. You still have your saved copy.</div>' : ''}
+    <div class="actions">
+      <button class="act primary" id="ctNav"><i>${ICON.nav}</i>Start</button>
+      <button class="act${fav ? ' on' : ''}" id="ctFav"><i>${fav ? ICON.heartF : ICON.heart}</i>${fav ? 'Saved' : 'Save'}</button>
+      <button class="act" id="ctShare"><i>${ICON.share}</i>GPX</button>
+      ${t.mine ? `<button class="act" id="ctEdit"><i>${ICON.pencil}</i>Edit</button>` : `<button class="act" id="ctReport"><i>⚑</i>Report</button>`}
+    </div>
+    <div class="stats"><div class="stat"><span>Length</span><b>${G.fmtDist(t.len)}</b></div><div class="stat"><span>Elev. gain</span><b id="ctGain">…</b></div><div class="stat"><span>Est. time</span><b id="ctTime">${fmtHM(G.estTime(t.len, 0, act))}</b></div></div>
+    <canvas class="profile" id="ctProf"></canvas><div class="muted" id="ctProfNote"></div>
+    <h3>Best for</h3><div class="badges">${(t.bestFor || []).map(b => `<span class="badge good">${CT.BEST_FOR[b]?.[0] || ''} ${CT.BEST_FOR[b]?.[1] || esc(b)}</span>`).join('')}
+      ${veh ? `<span class="badge warn">🚙 ${CT.CLEARANCE[t.clearance] || 'Any vehicle'}</span>` : ''}
+      ${S.mode === 'drive' && st.vehicle && veh ? (fit ? `<span class="badge good">✓ Suits your ${esc(st.vehicle.nickname || st.vehicle.model || 'vehicle')}</span>` : `<span class="badge warn">⚠︎ Your ${esc(st.vehicle.nickname || st.vehicle.model || 'vehicle')} may not fit</span>`) : ''}</div>
+    ${t.notes ? `<h3>Notes from ${t.mine ? 'you' : esc(t.author)}</h3><div class="note ct-notes">${esc(t.notes)}</div>` : ''}
+    <h3>More</h3><div class="row"><button class="btn" id="ctDl">${ICON.dl} Save area offline</button><button class="btn" id="ctPlan">${ICON.route} Plan from here</button></div>
+    ${t.mine && !opts.gone ? `<button class="btn danger block" id="ctDel" style="margin-top:10px">${ICON.trash} Delete trail</button>` : ''}
+    <h3>Details</h3><dl class="kv"><dt>Trailhead</dt><dd>${t.start[1].toFixed(5)}, ${t.start[0].toFixed(5)}</dd><dt>Made from</dt><dd>${t.source === 'recorded' ? 'GPS recording' : 'Drawn on the map'}</dd><dt>Updated</dt><dd>${new Date(t.updated).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</dd>${t.mine && t.reports ? `<dt>Reports</dt><dd>${t.reports}</dd>` : ''}</dl>
+    <p class="muted">${t.mine ? 'Only you can edit or delete this trail.' : 'Only the creator can change this trail. Lodestar doesn\'t verify community trails — check access and closures before you go.'}${t.coords ? ' Saved on this device for offline use.' : ''}</p>`);
+  if (sheet.get() === 'peek') sheet.set('half');
+  if (t.bbox) fitTo(t.bbox);
+  $('#ctNav').onclick = () => startNav({ name: t.name, coords: geom, activity: act });
+  $('#ctFav').onclick = () => toggleCFav(t);
+  $('#ctShare').onclick = () => shareFiles([new File([G.toGPX({ name: t.name, routes: [{ name: t.name, coords: geom }] })], slug(t.name) + '.gpx', { type: 'application/gpx+xml' })], t.name, `${t.name} — ${G.fmtDist(t.len)} on Lodestar`);
+  $('#ctEdit')?.addEventListener('click', () => { st.ctDraft = { id: t.id, coords: t.coords || null, len: t.len, source: t.source, name: t.name, bestFor: [...(t.bestFor || [])], difficulty: t.difficulty, clearance: t.clearance, notes: t.notes || '', shared: !!t.shared }; show('trailForm', {}); });
+  $('#ctReport')?.addEventListener('click', () => reportBox(t));
+  $('#ctDel')?.addEventListener('click', async () => {
+    if (!(await confirmBox('Delete this trail?', t.shared ? 'It will be removed for everyone in the Lodestar community.' : 'This can\'t be undone.', 'Delete', true))) return;
+    try {
+      await CT.deleteTrail(t.id); st.ctrails.delete(t.id); refreshCommunityLayer();
+      if (st.favorites.has('c:' + t.id)) { await db.del('favorites', 'c:' + t.id); st.favorites.delete('c:' + t.id); }
+      highlight(null); toast('Trail deleted'); back();
+    } catch (e) { toast(e.message || 'Couldn\'t delete'); }
+  });
+  $('#ctDl').onclick = () => { const p = 0.01, b = t.bbox; show('newArea', { bbox: [b[0] - p, b[1] - p, b[2] + p, b[3] + p], name: t.name }); };
+  $('#ctPlan').onclick = () => { show('plan', {}); planAdd(t.start); };
+  if (geom.length > 1) G.profile(geom).then(pr => {
+    if (st.view?.name !== 'ctrail' || st.view.args.id !== t.id || !$('#ctGain')) return;
+    if (!pr) { $('#ctGain').textContent = '–'; $('#ctProf').style.display = 'none'; $('#ctProfNote').textContent = 'Elevation needs terrain data: go online once or save this area offline.'; return; }
+    $('#ctGain').textContent = G.fmtElev(pr.gain); $('#ctTime').textContent = fmtHM(G.estTime(t.len, pr.gain, act));
+    drawProfile($('#ctProf'), pr, '#0b9e9a'); $('#ctProfNote').textContent = `Low ${G.fmtElev(pr.min)} · High ${G.fmtElev(pr.max)} · Elevation from AWS Terrain Tiles (approx.)`;
+  });
+}
+async function toggleCFav(t) {
+  const id = 'c:' + t.id;
+  if (st.favorites.has(id)) { await db.del('favorites', id); st.favorites.delete(id); toast('Removed from saved'); }
+  else {
+    let full = t; if (!full.coords) { try { full = (await CT.getTrail(t.id)) || t; } catch { } }
+    const f = { id, community: { ...full, _d: undefined }, saved: Date.now() };
+    await db.put('favorites', f); st.favorites.set(id, f); toast('Saved to your trails ♥︎ — available offline');
+  }
+  if (st.view?.name === 'ctrail') paintCtrail(st.ctrails.get(t.id) || t);
+}
+function reportBox(t) {
+  const reasons = ['Wrong or inaccurate', 'Closed or not legal to use', 'Crosses private land', 'Unsafe', 'Spam or offensive'];
+  let pick = '';
+  modal(`<h2>Report this trail</h2><p class="sub">Tell Lodestar what's wrong with “${esc(t.name)}”. The creator isn't told who reported it.</p>
+    <div class="chips wrap">${reasons.map(r => chip(r, false, `data-rr="${esc(r)}"`)).join('')}</div>
+    <div class="field"><span>Details <em class="muted">optional</em></span><textarea class="input" id="rpText" maxlength="240" placeholder="What did you see?"></textarea></div>
+    <p class="err-line" id="rpErr" hidden></p>
+    <div class="row"><button class="btn" data-x>Cancel</button><button class="btn danger" id="rpGo" disabled>Report</button></div>`, (m, close) => {
+    $$('[data-rr]', m).forEach(b => b.onclick = () => { pick = b.dataset.rr; $$('[data-rr]', m).forEach(x => x.classList.toggle('on', x === b)); m.querySelector('#rpGo').disabled = false; });
+    m.querySelector('[data-x]').onclick = close;
+    m.querySelector('#rpGo').onclick = async () => {
+      const txt = m.querySelector('#rpText').value.trim();
+      try { await CT.reportTrail(t.id, (pick + (txt ? ': ' + txt : '')).slice(0, 300)); close(); toast('Thanks — reported for review'); }
+      catch (e) { const er = m.querySelector('#rpErr'); er.textContent = e.status == null ? 'You\'re offline. Try again when you have signal.' : e.message; er.hidden = false; }
+    };
+  });
+}
+
 // ---------------- profile / settings ----------------
 function syncLine() {
   if (acct.syncing) return '<span class="sync-dot spin"></span>Syncing…';
@@ -1432,7 +1725,7 @@ function deleteAccountBox() {
   });
 }
 
-const VIEWS = { explore: renderExplore, trail: renderTrail, record: renderRecord, saved: renderSaved, activity: renderActivity, route: renderRoute, waypoint: renderWaypoint, plan: renderPlan, offline: renderOffline, newArea: renderNewArea, more: renderMore, nav: renderNav };
+const VIEWS = { explore: renderExplore, trail: renderTrail, record: renderRecord, saved: renderSaved, activity: renderActivity, route: renderRoute, waypoint: renderWaypoint, plan: renderPlan, offline: renderOffline, newArea: renderNewArea, more: renderMore, nav: renderNav, community: renderCommunity, ctrail: renderCtrail, createTrail: renderCreateTrail, trailForm: renderTrailForm };
 window.addEventListener('error', e => console.error('Lodestar error:', e.message));
 boot();
 // expose for debugging/tests

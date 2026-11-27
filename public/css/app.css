@@ -297,3 +297,20 @@ body.locked #topbar, body.locked #fabs, body.locked #sheet, body.locked #tabbar,
 .modal .recov-save input:checked { background: var(--accent); border-color: var(--accent); }
 .modal .recov-save input:checked::after { border-color: #fff; }
 .modal .recov-go { background: var(--accent); color: #fff; height: 46px; border-radius: 14px; width: 100%; font-weight: 600; }
+
+/* community trails */
+.ct-row { margin: 2px 0 10px; }
+.ct-row .btn { height: 38px; font-size: 14.5px; }
+.chips.wrap { flex-wrap: wrap; overflow: visible; margin: 0; padding: 0; }
+.ct-thumb { background: rgba(11, 158, 154, .14); }
+.tagc { color: #7c4dff; font-weight: 700; }
+.ct-by { margin-top: 2px; font-size: 12.5px; }
+.ct-author { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 14px; color: var(--text2); flex-wrap: wrap; }
+.ct-author .avatar { width: 26px; height: 26px; border-radius: 50%; background: #0b9e9a; color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+.ct-author b { color: var(--text); }
+.badge.ct { background: rgba(124, 77, 255, .14); color: #7c4dff; }
+.ct-notes { white-space: pre-wrap; }
+.warn-note { border-left: 3px solid var(--drive); }
+.share-group .muted { margin-top: 3px; font-size: 13px; font-weight: 400; line-height: 1.35; }
+.field span em, h3 em { font-style: normal; font-weight: 400; }
+.field textarea.input { min-height: 84px; }
