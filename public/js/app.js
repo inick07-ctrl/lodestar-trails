@@ -81,11 +81,16 @@ function online() {
   if (!navigator.onLine) { p.hidden = false; p.textContent = '● Offline — using saved maps'; }
   else p.hidden = true;
 }
+function installHintShown() { try { return localStorage.getItem('ls-installHintShown') === '1'; } catch { return false; } }
+function markInstallHintShown() { try { localStorage.setItem('ls-installHintShown', '1'); } catch { } }
 function maybeInstallHint() {
   addEventListener('beforeinstallprompt', e => { e.preventDefault(); st.installEvt = e; });
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  db.kvGet('installHintShown', false).then(shown => { if (!standalone && ios && !shown) setTimeout(() => { db.kvSet('installHintShown', true); if ($('#modalWrap')?.hidden !== false && !$('#auth')) installHelp(); }, 2500); });
+  // Dismissal lives in localStorage so sign-out's IndexedDB wipe does not re-prompt on this device.
+  const consider = shown => { if (standalone || !ios || shown) return; setTimeout(() => { markInstallHintShown(); if ($('#modalWrap')?.hidden !== false && !$('#auth')) installHelp(); }, 2500); };
+  if (installHintShown()) return;
+  db.kvGet('installHintShown', false).then(old => { if (old) markInstallHintShown(); consider(old || installHintShown()); });
 }
 function installHelp() {
   modal(`<h2>Add Lodestar to your Home Screen</h2>

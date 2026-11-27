@@ -28,7 +28,7 @@ export async function wipeLocal() {
   await db.clearAll();
   try { for (const k of await caches.keys()) if (!k.startsWith('ls-shell')) await caches.delete(k); } catch { }
   try { localStorage.removeItem('ls-overpass'); } catch { }
-  // keep only non-personal display preferences
+  // keep only non-personal display preferences. Do not clear ls-installHintShown — that is a device preference and must survive sign-out.
   if (settings) await db.kvSet('settings', { theme: settings.theme, imperial: settings.imperial });
 }
 
